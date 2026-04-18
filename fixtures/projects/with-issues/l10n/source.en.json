@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "keys": {
+    "tmp.welcome": {
+      "text": "Hello",
+      "placeholders": {}
+    },
+    "onboarding.Welcome.title": {
+      "text": "Welcome",
+      "placeholders": {}
+    },
+    "payments.title": {
+      "text": "Pay now",
+      "placeholders": {}
+    },
+    "settings.counter.label": {
+      "text": "{count, plural, one {1 item} other {{count} items}}",
+      "placeholders": {}
+    }
+  }
+}

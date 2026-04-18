@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "locale": "de",
+  "entries": {
+    "payments.title": {
+      "text": "Jetzt bezahlen",
+      "reviewed": false,
+      "stale": false,
+      "source_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "provider": "codex-local",
+      "model_version": "gpt-5-2026-03-01",
+      "translated_at": "2026-04-18T12:00:00Z"
+    },
+    "legacy.key": {
+      "text": "Alt",
+      "reviewed": false,
+      "stale": false,
+      "source_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "provider": "codex-local",
+      "model_version": "gpt-5-2026-03-01",
+      "translated_at": "2026-04-18T12:00:00Z"
+    }
+  }
+}

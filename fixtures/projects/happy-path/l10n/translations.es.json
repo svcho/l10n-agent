@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "locale": "es",
+  "entries": {
+    "onboarding.welcome.title": {
+      "text": "Bienvenido a casa, {name}",
+      "reviewed": false,
+      "stale": false,
+      "source_hash": "sha256:ae7593171bfe263eb9f504282b37fe29fa76e638ac6e604f1cc6585eff49d9b6",
+      "provider": "codex-local",
+      "model_version": "gpt-5-2026-03-01",
+      "translated_at": "2026-04-18T12:00:00Z"
+    },
+    "settings.privacy.title": {
+      "text": "Privacidad",
+      "reviewed": false,
+      "stale": false,
+      "source_hash": "sha256:9c432d31bfec7bccb6b1c0682109da54c2b0d107434f68c2ebb15a7cb08baee0",
+      "provider": "codex-local",
+      "model_version": "gpt-5-2026-03-01",
+      "translated_at": "2026-04-18T12:00:00Z"
+    }
+  }
+}

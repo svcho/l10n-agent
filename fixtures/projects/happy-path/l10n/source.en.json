@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "keys": {
+    "onboarding.welcome.title": {
+      "text": "Welcome home, {name}",
+      "description": "First-launch hero. Friendly tone.",
+      "placeholders": {
+        "name": {
+          "type": "string",
+          "example": "Jacob"
+        }
+      }
+    },
+    "settings.privacy.title": {
+      "text": "Privacy",
+      "description": "Settings screen title.",
+      "placeholders": {}
+    }
+  }
+}
