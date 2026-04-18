@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <!-- l10n-agent-meta {"placeholders":[{"name":"name","type":"string"}]} -->
-  <string name="onboarding_welcome_title">Welcome home, %1$s</string>
-  <string name="settings_privacy_title">Privacy</string>
+  <string name="onboarding_welcome_title">Bienvenido a casa, %1$s</string>
+  <string name="settings_privacy_title">Privacidad</string>
 </resources>

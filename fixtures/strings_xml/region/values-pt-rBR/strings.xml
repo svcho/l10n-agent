@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- l10n-agent-meta {"placeholders":[{"name":"count","type":"number"}]} -->
+  <string name="backup_summary">Backup de %1$d itens concluído</string>
+  <string name="billing_note">Economize 50%% hoje</string>
+</resources>

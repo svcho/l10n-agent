@@ -1,11 +1,12 @@
 import { access, constants } from 'node:fs/promises';
 
 import {
-  IosXcstringsAdapter,
   buildCanonicalKeySetFromSource,
   buildCanonicalKeySetFromTranslation,
   compareCanonicalKeySets,
-} from '../adapters/ios/xcstrings.js';
+} from '../adapters/canonical.js';
+import { AndroidStringsAdapter } from '../adapters/android/strings.js';
+import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
 import { L10nError } from '../errors/l10n-error.js';
 import type { Diagnostic } from './diagnostics.js';
 import { compareDiagnostics, hasErrorDiagnostics } from './diagnostics.js';
@@ -44,6 +45,17 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
     : null;
   const iosAdapter = snapshot.platformPaths.ios
     ? new IosXcstringsAdapter(iosAdapterOptions ?? { sourceLocale: snapshot.config.source_locale })
+    : null;
+  const androidAdapterOptions = snapshot.config.platforms.android
+    ? {
+        sourceLocale: snapshot.config.source_locale,
+        ...(snapshot.config.platforms.android.key_transform
+          ? { keyTransform: snapshot.config.platforms.android.key_transform }
+          : {}),
+      }
+    : null;
+  const androidAdapter = snapshot.platformPaths.android
+    ? new AndroidStringsAdapter(androidAdapterOptions ?? { sourceLocale: snapshot.config.source_locale })
     : null;
 
   diagnostics.push(...lintSourceKeys(snapshot.config, snapshot.source.value));
@@ -91,6 +103,47 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
               locale: translation.locale,
               path: snapshot.platformPaths.ios,
               platform: 'ios',
+            },
+          ),
+        );
+      }
+    } catch (error) {
+      if (error instanceof L10nError) {
+        diagnostics.push(error.diagnostic);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  if (androidAdapter && snapshot.platformPaths.android) {
+    try {
+      const sourceResources = await androidAdapter.read(
+        snapshot.platformPaths.android,
+        snapshot.config.source_locale,
+      );
+      diagnostics.push(
+        ...compareCanonicalKeySets(buildCanonicalKeySetFromSource(snapshot.source.value), sourceResources, {
+          locale: snapshot.config.source_locale,
+          path: snapshot.platformPaths.android,
+          platform: 'android',
+        }),
+      );
+
+      for (const translation of snapshot.translations) {
+        if (!translation.exists || !translation.value) {
+          continue;
+        }
+
+        const localeResources = await androidAdapter.read(snapshot.platformPaths.android, translation.locale);
+        diagnostics.push(
+          ...compareCanonicalKeySets(
+            buildCanonicalKeySetFromTranslation(translation.value, snapshot.source.value),
+            localeResources,
+            {
+              locale: translation.locale,
+              path: snapshot.platformPaths.android,
+              platform: 'android',
             },
           ),
         );

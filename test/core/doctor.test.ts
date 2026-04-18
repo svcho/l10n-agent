@@ -47,8 +47,8 @@ describe('buildDoctorReport', () => {
       },
       {
         configured: true,
-        key_count: null,
-        locales: [],
+        key_count: 2,
+        locales: ['de', 'en', 'es'],
         path: expect.stringContaining(
           'fixtures/projects/happy-path/android/app/src/main/res/values/strings.xml',
         ),

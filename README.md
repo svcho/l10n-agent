@@ -2,7 +2,7 @@
 
 `l10n-agent` is a local-first CLI for managing a canonical localization store for iOS and Android projects.
 
-Current status: Milestone 2 is implemented. The repo now includes the deterministic M1 foundation plus an iOS `.xcstrings` adapter with placeholder-aware read/write support, plural rejection, and deterministic health checks against the canonical store. Android write support and provider-backed sync remain for later milestones.
+Current status: Milestone 3 is implemented. The repo now includes the deterministic M1 foundation plus iOS `.xcstrings` and Android `strings.xml` adapters with placeholder-aware read/write support, plural rejection, and deterministic health checks against the canonical store. Provider-backed sync remains for later milestones.
 
 ## Development
 
