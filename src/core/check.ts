@@ -6,7 +6,8 @@ import {
   compareCanonicalKeySets,
 } from '../adapters/canonical.js';
 import { AndroidStringsAdapter } from '../adapters/android/strings.js';
-import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
+import { createIosAdapter } from '../adapters/ios/index.js';
+import { isIosStringsPath, resolveIosStringsLocalePath } from '../adapters/ios/strings.js';
 import { L10nError } from '../errors/l10n-error.js';
 import type { Diagnostic } from './diagnostics.js';
 import { compareDiagnostics, hasErrorDiagnostics } from './diagnostics.js';
@@ -44,7 +45,10 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
       }
     : null;
   const iosAdapter = snapshot.platformPaths.ios
-    ? new IosXcstringsAdapter(iosAdapterOptions ?? { sourceLocale: snapshot.config.source_locale })
+    ? createIosAdapter(
+        snapshot.platformPaths.ios,
+        iosAdapterOptions ?? { sourceLocale: snapshot.config.source_locale },
+      )
     : null;
   const androidAdapterOptions = snapshot.config.platforms.android
     ? {
@@ -79,12 +83,20 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
   }
 
   if (iosAdapter && snapshot.platformPaths.ios) {
+    const iosSourcePath = isIosStringsPath(snapshot.platformPaths.ios)
+      ? resolveIosStringsLocalePath(
+          snapshot.platformPaths.ios,
+          snapshot.config.source_locale,
+          snapshot.config.source_locale,
+        )
+      : snapshot.platformPaths.ios;
+
     try {
       const sourceCatalog = await iosAdapter.read(snapshot.platformPaths.ios, snapshot.config.source_locale);
       diagnostics.push(
         ...compareCanonicalKeySets(buildCanonicalKeySetFromSource(snapshot.source.value), sourceCatalog, {
           locale: snapshot.config.source_locale,
-          path: snapshot.platformPaths.ios,
+          path: iosSourcePath,
           platform: 'ios',
         }),
       );
@@ -94,6 +106,13 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
           continue;
         }
 
+        const iosLocalePath = isIosStringsPath(snapshot.platformPaths.ios)
+          ? resolveIosStringsLocalePath(
+              snapshot.platformPaths.ios,
+              snapshot.config.source_locale,
+              translation.locale,
+            )
+          : snapshot.platformPaths.ios;
         const localeCatalog = await iosAdapter.read(snapshot.platformPaths.ios, translation.locale);
         diagnostics.push(
           ...compareCanonicalKeySets(
@@ -101,7 +120,7 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
             localeCatalog,
             {
               locale: translation.locale,
-              path: snapshot.platformPaths.ios,
+              path: iosLocalePath,
               platform: 'ios',
             },
           ),

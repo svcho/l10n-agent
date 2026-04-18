@@ -1,5 +1,5 @@
 import { AndroidStringsAdapter } from '../adapters/android/strings.js';
-import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
+import { createIosAdapter } from '../adapters/ios/index.js';
 import type { TranslationRequest } from '../providers/base.js';
 import type { CodexPreflightResult } from '../providers/codex-local.js';
 import { buildSyncPlan } from './sync.js';
@@ -109,7 +109,7 @@ export async function buildDoctorReport(
 
   const iosPlatformReport =
     snapshot.platformPaths.ios && snapshot.config.platforms.ios
-      ? await new IosXcstringsAdapter({
+      ? await createIosAdapter(snapshot.platformPaths.ios, {
           sourceLocale: snapshot.config.source_locale,
           ...(snapshot.config.platforms.ios.key_transform
             ? { keyTransform: snapshot.config.platforms.ios.key_transform }

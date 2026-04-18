@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import { resolveAndroidLocalePath } from '../adapters/android/strings.js';
 import { buildCanonicalKeySetFromSource, type ExtendedCanonicalKeySet } from '../adapters/canonical.js';
+import { isIosStringsPath, resolveIosStringsLocalePath } from '../adapters/ios/strings.js';
 import { L10nError } from '../errors/l10n-error.js';
 import type { TranslationProvider, TranslationRequest } from '../providers/base.js';
 import { readTextFile, writeTextFileAtomic } from '../utils/fs.js';
@@ -517,6 +518,11 @@ export async function runSync(
       ...removedTranslationFiles.flatMap((translation) =>
         snapshot.platformPaths.android
           ? [resolveAndroidLocalePath(snapshot.platformPaths.android, snapshot.config.source_locale, translation.locale)]
+          : [],
+      ),
+      ...removedTranslationFiles.flatMap((translation) =>
+        snapshot.platformPaths.ios && isIosStringsPath(snapshot.platformPaths.ios)
+          ? [resolveIosStringsLocalePath(snapshot.platformPaths.ios, snapshot.config.source_locale, translation.locale)]
           : [],
       ),
     ]),

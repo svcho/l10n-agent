@@ -13,7 +13,7 @@ This file is intended to preserve the important maintainer context that would ot
 - local CLI-first workflows
 - canonical source file at `l10n/source.<locale>.json`
 - derived per-locale translation files at `l10n/translations.<locale>.json`
-- iOS `.xcstrings`
+- iOS `.xcstrings` and `Localizable.strings`
 - Android `strings.xml`
 - local Codex CLI as the only provider-backed path
 - deterministic repo checks and offline tests
@@ -135,7 +135,7 @@ Important translation entry semantics:
 - `src/providers/codex-local.ts`
   Codex preflight, structured prompts, and replay transport
 - `src/adapters/ios/`
-  `.xcstrings` adapter
+  `.xcstrings` and `Localizable.strings` adapters
 - `src/adapters/android/`
   `strings.xml` adapter
 - `fixtures/projects/`

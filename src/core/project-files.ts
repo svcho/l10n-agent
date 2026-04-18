@@ -6,7 +6,8 @@ import {
   buildCanonicalKeySetFromTranslation,
 } from '../adapters/canonical.js';
 import { AndroidStringsAdapter } from '../adapters/android/strings.js';
-import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
+import { createIosAdapter } from '../adapters/ios/index.js';
+import { isIosStringsPath, resolveIosStringsLocalePath } from '../adapters/ios/strings.js';
 import { L10nError } from '../errors/l10n-error.js';
 import { readJsonFile, writeJsonFileAtomic, writeTextFileAtomic } from '../utils/fs.js';
 import type { ProjectSnapshot } from './store/load.js';
@@ -43,6 +44,25 @@ export function getManagedFilePaths(snapshot: ProjectSnapshot): string[] {
   for (const platformPath of Object.values(snapshot.platformPaths)) {
     if (platformPath) {
       filePaths.add(platformPath);
+    }
+  }
+
+  if (snapshot.platformPaths.ios && isIosStringsPath(snapshot.platformPaths.ios)) {
+    filePaths.add(
+      resolveIosStringsLocalePath(
+        snapshot.platformPaths.ios,
+        snapshot.config.source_locale,
+        snapshot.config.source_locale,
+      ),
+    );
+    for (const translation of snapshot.translations) {
+      filePaths.add(
+        resolveIosStringsLocalePath(
+          snapshot.platformPaths.ios,
+          snapshot.config.source_locale,
+          translation.locale,
+        ),
+      );
     }
   }
 
@@ -169,7 +189,7 @@ export async function writeProjectFiles(
   }
 
   if (snapshot.platformPaths.ios && snapshot.config.platforms.ios) {
-    const adapter = new IosXcstringsAdapter({
+    const adapter = createIosAdapter(snapshot.platformPaths.ios, {
       keyTransform: snapshot.config.platforms.ios.key_transform,
       sourceLocale: snapshot.config.source_locale,
     });

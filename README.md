@@ -22,7 +22,7 @@ The intended workflow is:
 
 v1 supports:
 
-- native iOS `.xcstrings`
+- native iOS `.xcstrings` and `Localizable.strings`
 - native Android `strings.xml`
 - local Codex CLI as the only provider-backed path
 - deterministic local files committed to git
@@ -64,7 +64,7 @@ Plural ICU syntax is still out of scope. If source text contains plural syntax, 
   Rename a canonical key across source, translations, history, and native platform files in one pass.
 - `rollback --to <history-id>`
   Restore managed localization files to the snapshot taken before a history entry.
-- `import --from <xcstrings|android>`
+- `import --from <xcstrings|android>` (`xcstrings` covers iOS `.xcstrings` and `Localizable.strings`)
   Import source and reviewed translations from native platform files.
 - `repair [--dry-run]`
   Re-canonicalize managed JSON files and auto-merge simple disjoint-key git conflict markers.
@@ -207,7 +207,7 @@ If a provider-backed `sync` fails mid-run:
 
 ### A. Existing iOS or Android localization setup
 
-Use this when the app already has committed `.xcstrings` files, Android `strings.xml`, or both.
+Use this when the app already has committed iOS string files (`.xcstrings` or `Localizable.strings`), Android `strings.xml`, or both.
 
 #### 1. Install the tool and verify the repo
 
@@ -235,7 +235,7 @@ npm run dev -- init
 
 What happens:
 
-- platform localization files are auto-detected where possible
+- platform localization files are auto-detected where possible (`.xcstrings`, `*.lproj/Localizable.strings`, and Android `strings.xml`)
 - `l10n/config.yaml` is created
 - `l10n/source.<locale>.json` is created
 - existing platform strings are imported into canonical source and target translation files
@@ -245,6 +245,9 @@ If auto-detection is wrong or incomplete, pass paths explicitly:
 
 ```bash
 npm run dev -- init --ios-path ios/MyApp/Localizable.xcstrings --android-path android/app/src/main/res/values/strings.xml
+
+# or with legacy iOS strings files
+npm run dev -- init --ios-path MyApp/en.lproj/Localizable.strings
 ```
 
 #### 4. Review the generated config
@@ -323,7 +326,9 @@ You need at least one managed platform file so `init` has a target.
 
 For iOS:
 
-- create a `.xcstrings` catalog in the app target, such as `ios/MyApp/Localizable.xcstrings`
+- create an iOS localization container:
+  - `.xcstrings` catalog such as `ios/MyApp/Localizable.xcstrings`, or
+  - `Localizable.strings` at `MyApp/en.lproj/Localizable.strings`
 
 For Android:
 

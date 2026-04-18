@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -215,5 +215,31 @@ describe('Milestone 5 flows', () => {
       'settings.privacy.title',
     ]);
     expect(snapshot.history.value?.map((entry) => entry.op)).toEqual(['init', 'import']);
+  });
+
+  it('initializes a repo when only Localizable.strings exists', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'l10n-agent-init-ios-strings-'));
+    const sourceStringsPath = join(projectDir, 'MyApp/en.lproj/Localizable.strings');
+    await mkdir(join(projectDir, 'MyApp/en.lproj'), { recursive: true });
+    await writeFile(
+      sourceStringsPath,
+      '"onboarding.welcome.title" = "Welcome home, {name}";\n"settings.privacy.title" = "Privacy";\n',
+      'utf8',
+    );
+
+    const report = await runInit(projectDir, undefined, {
+      sourceLocale: 'en',
+      targetLocales: ['de'],
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.imported_from).toBe('xcstrings');
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    expect(snapshot.config.platforms.ios?.path).toBe('MyApp/en.lproj/Localizable.strings');
+    expect(Object.keys(snapshot.source.value.keys)).toEqual([
+      'onboarding.welcome.title',
+      'settings.privacy.title',
+    ]);
   });
 });

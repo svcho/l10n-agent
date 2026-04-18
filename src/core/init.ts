@@ -75,14 +75,15 @@ async function findFirstMatch(
 }
 
 async function detectPlatformPaths(rootDir: string): Promise<DetectedPlatformPaths> {
-  const [ios, android] = await Promise.all([
+  const [iosCatalog, iosStrings, android] = await Promise.all([
     findFirstMatch(rootDir, (path) => path.endsWith('.xcstrings')),
+    findFirstMatch(rootDir, (path) => /(?:^|\/)[^/]+\.lproj\/Localizable\.strings$/u.test(path)),
     findFirstMatch(rootDir, (path) => /(?:^|\/)res\/values\/strings\.xml$/u.test(path)),
   ]);
 
   return {
     android,
-    ios,
+    ios: iosCatalog ?? iosStrings,
   };
 }
 

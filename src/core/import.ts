@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 
 import { AndroidStringsAdapter } from '../adapters/android/strings.js';
-import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
+import { createIosAdapter } from '../adapters/ios/index.js';
 import { L10nError } from '../errors/l10n-error.js';
 import { computeSourceHash } from './store/hash.js';
 import type { ProjectSnapshot } from './store/load.js';
@@ -93,12 +93,12 @@ async function readCanonicalForLocale(
         code: 'L10N_E0030',
         details: { platform: 'ios' },
         level: 'error',
-        next: 'Configure platforms.ios.path in l10n/config.yaml before importing from xcstrings.',
+        next: 'Configure platforms.ios.path in l10n/config.yaml before importing from iOS string files.',
         summary: 'iOS platform path is not configured',
       });
     }
 
-    const adapter = new IosXcstringsAdapter({
+    const adapter = createIosAdapter(snapshot.platformPaths.ios, {
       keyTransform: snapshot.config.platforms.ios.key_transform,
       sourceLocale: snapshot.config.source_locale,
     });

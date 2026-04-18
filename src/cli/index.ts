@@ -123,8 +123,8 @@ program
   .command('init')
   .description('Scaffold l10n/ config and canonical store files.')
   .option('--android-path <path>', 'relative path to Android strings.xml')
-  .option('--ios-path <path>', 'relative path to the iOS .xcstrings catalog')
-  .option('--import-from <source>', 'import existing strings from xcstrings or android')
+  .option('--ios-path <path>', 'relative path to iOS .xcstrings or Localizable.strings')
+  .option('--import-from <source>', 'import existing strings from iOS (xcstrings/strings) or android')
   .option('--no-import-existing', 'skip importing existing platform strings')
   .option('--source-locale <locale>', 'canonical source locale', 'en')
   .option(
@@ -281,7 +281,7 @@ program
 program
   .command('import')
   .description('Import canonical source and translations from an existing platform format.')
-  .requiredOption('--from <source>', 'import source: xcstrings or android')
+  .requiredOption('--from <source>', 'import source: xcstrings (iOS) or android')
   .option('--dry-run', 'compute the import result without writing files', false)
   .action(async function importAction(this: Command) {
     await runAction(this, async (options) => {
