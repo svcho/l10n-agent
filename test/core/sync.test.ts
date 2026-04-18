@@ -9,7 +9,8 @@ import { IosXcstringsAdapter } from '../../src/adapters/ios/xcstrings.js';
 import { buildCanonicalKeySetFromTranslation } from '../../src/adapters/canonical.js';
 import { buildCheckReport } from '../../src/core/check.js';
 import { loadProjectSnapshot } from '../../src/core/store/load.js';
-import { runSync } from '../../src/core/sync.js';
+import { buildSyncPlan, runSync } from '../../src/core/sync.js';
+import { computeProviderCacheKeyHash } from '../../src/core/store/hash.js';
 import { ReplayCodexExecTransport, CodexLocalProvider } from '../../src/providers/codex-local.js';
 import { stableStringify } from '../../src/utils/json.js';
 
@@ -455,6 +456,182 @@ describe('runSync', () => {
     await expect(readFile(androidFrenchPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     expect(refreshed.history.value?.some((entry) => entry.op === 'remove_locale' && entry.locale === 'fr')).toBe(
       true,
+    );
+  });
+
+  it('invalidates cache hits when provider.glossary changes', async () => {
+    const projectDir = await createTempProject('cache-glossary-bust');
+    const cachePath = join(projectDir, 'l10n/.cache.json');
+    const sourcePath = join(projectDir, 'l10n/source.en.json');
+
+    // Add a new source key so there is something to translate.
+    await updateSourceFile(projectDir, (source) => {
+      source.keys['settings.notifications.title'] = {
+        description: 'Settings screen notification row title.',
+        placeholders: {},
+        text: 'Notifications',
+      };
+    });
+
+    const snapshotBeforeGlossary = await loadProjectSnapshot(projectDir);
+    const notificationHash = snapshotBeforeGlossary.source.hashes.get('settings.notifications.title');
+    const configHashBefore = computeProviderCacheKeyHash(snapshotBeforeGlossary.config);
+
+    // Seed the cache with a valid v3 entry using the CURRENT config hash.
+    await writeFile(
+      cachePath,
+      stableStringify({
+        entries: [
+          {
+            cached_at: '2026-04-18T10:00:00.000Z',
+            config_hash: configHashBefore,
+            locale: 'de',
+            model_version: 'gpt-5',
+            source_hash: notificationHash,
+            text: 'Benachrichtigungen (cached)',
+          },
+          {
+            cached_at: '2026-04-18T10:00:00.000Z',
+            config_hash: configHashBefore,
+            locale: 'es',
+            model_version: 'gpt-5',
+            source_hash: notificationHash,
+            text: 'Notificaciones (cached)',
+          },
+        ],
+        version: 3,
+      }),
+      'utf8',
+    );
+
+    // Verify the cache is used before the glossary change.
+    const snapshotWithCache = await loadProjectSnapshot(projectDir);
+    const planWithCache = buildSyncPlan(snapshotWithCache);
+    expect(planWithCache.total_cache_hits).toBe(2);
+
+    // Now add a glossary entry to config — this must bust the cache.
+    const configPath = join(projectDir, 'l10n/config.yaml');
+    const configText = await readFile(configPath, 'utf8');
+    const updatedConfig = configText + '\n  glossary:\n    Notifications:\n      de: Mitteilungen\n';
+    await writeFile(configPath, updatedConfig, 'utf8');
+
+    const snapshotAfterGlossary = await loadProjectSnapshot(projectDir);
+    const planAfterGlossary = buildSyncPlan(snapshotAfterGlossary);
+
+    // Cache hits must be 0 because config_hash changed.
+    expect(planAfterGlossary.total_cache_hits).toBe(0);
+    // Both entries must be treated as missing.
+    expect(planAfterGlossary.total_pending_tasks).toBe(2);
+  });
+
+  it('flags a placeholder mismatch when positional placeholders are reordered in a translation', async () => {
+    const projectDir = await createTempProject('placeholder-positional-reorder');
+
+    await updateSourceFile(projectDir, (source) => {
+      source.keys['onboarding.greeting.title'] = {
+        description: 'Greeting with two positional args.',
+        placeholders: {
+          '0': { example: 'Jacob', type: 'string' },
+          '1': { example: 'World', type: 'string' },
+        },
+        text: '{0} loves {1}',
+      };
+    });
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runSync(snapshot, {
+      provider: {
+        id: 'test-positional',
+        preflight: async () => ({ ok: true }),
+        translate: async (request) => ({
+          modelVersion: 'test-model',
+          // Swap {0} and {1} — should fail parity for the affected locale.
+          text: request.targetLocale === 'de' ? '{1} liebt {0}' : '{0} ama a {1}',
+        }),
+      },
+    });
+
+    expect(report.ok).toBe(false);
+    // de gets the swapped version — should fail parity.
+    expect(report.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'L10N_E0041' }),
+      ]),
+    );
+    // de should NOT have been written (parity failed).
+    const refreshed = await loadProjectSnapshot(projectDir);
+    expect(
+      refreshed.translations.find((t) => t.locale === 'de')?.value?.entries['onboarding.greeting.title'],
+    ).toBeUndefined();
+    // es preserves original order {0} … {1} — should pass parity and be written.
+    expect(
+      refreshed.translations.find((t) => t.locale === 'es')?.value?.entries['onboarding.greeting.title']?.text,
+    ).toBe('{0} ama a {1}');
+  });
+
+  it('accepts a translation where named (non-positional) ICU placeholders are reordered', async () => {
+    const projectDir = await createTempProject('placeholder-named-reorder');
+
+    await updateSourceFile(projectDir, (source) => {
+      source.keys['onboarding.greeting.title'] = {
+        description: 'Greeting with named args.',
+        placeholders: {
+          name: { example: 'Jacob', type: 'string' },
+          count: { example: '3', type: 'number' },
+        },
+        text: '{name} sent {count}',
+      };
+    });
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runSync(snapshot, {
+      provider: {
+        id: 'test-named',
+        preflight: async () => ({ ok: true }),
+        translate: async () => ({
+          modelVersion: 'test-model',
+          // Reordering named placeholders is grammatically valid across languages.
+          text: '{count} von {name}',
+        }),
+      },
+    });
+
+    // Named reordering should NOT trigger L10N_E0041.
+    expect(report.diagnostics.some((d) => d.code === 'L10N_E0041')).toBe(false);
+    expect(report.summary.translated).toBe(2);
+  });
+
+  it('flags a mismatch when a repeated placeholder appears fewer times in the translation', async () => {
+    const projectDir = await createTempProject('placeholder-count-mismatch');
+
+    await updateSourceFile(projectDir, (source) => {
+      source.keys['onboarding.greeting.title'] = {
+        description: 'Greeting repeated twice.',
+        placeholders: {
+          name: { example: 'Jacob', type: 'string' },
+        },
+        text: '{name} and {name}',
+      };
+    });
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runSync(snapshot, {
+      provider: {
+        id: 'test-count-mismatch',
+        preflight: async () => ({ ok: true }),
+        translate: async () => ({
+          modelVersion: 'test-model',
+          // {name} appears only once — should fail parity.
+          text: 'Hello {name}',
+        }),
+      },
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'L10N_E0041' }),
+      ]),
     );
   });
 

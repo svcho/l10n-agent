@@ -36,6 +36,7 @@ export const TranslationFileSchema = z.object({
 
 export const CacheEntrySchema = z.object({
   cached_at: z.string().datetime(),
+  config_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   locale: LocaleCode,
   model_version: z.string(),
   source_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -44,7 +45,7 @@ export const CacheEntrySchema = z.object({
 
 export const CacheFileSchema = z.object({
   entries: z.array(CacheEntrySchema),
-  version: z.literal(2),
+  version: z.literal(3),
 });
 
 export const LegacyCacheFileSchema = z.object({

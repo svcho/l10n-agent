@@ -1,6 +1,6 @@
 # l10n-agent
 
-> Warning: this is an early experimental build. It may rewrite localization files in ways you do not want, and it may break parts of your repo workflow. Use it at your own risk, review diffs carefully, and test on a throwaway branch first.
+> Warning: this is an early-stage build. It may rewrite localization files in ways you do not expect. Use it at your own risk, review diffs carefully, and test on a throwaway branch first.
 
 `l10n-agent` is a local-first CLI for iOS and Android localization workflows. It keeps a canonical JSON source of truth under `l10n/`, syncs native platform files, translates missing strings through a local Codex CLI session, preserves reviewed edits, enforces key style rules, and helps clean up duplicate or conflicted localization state without introducing a hosted backend.
 
@@ -103,10 +103,10 @@ l10n-agent init
 If you want a fixed global install instead of a live link:
 
 ```bash
-npm install -g /Users/svcho/Development/src/github.com/svcho/l10n-agent
+npm install -g /path/to/l10n-agent
 ```
 
-`npm link` is usually better while you are developing this repo, because rebuilding here updates what the global `l10n-agent` command uses.
+`npm link` is usually better while you are developing this repo, because rebuilding here immediately updates what the global `l10n-agent` command uses without reinstalling.
 
 For local development in this repo:
 
@@ -139,7 +139,7 @@ Important file meanings:
 - `l10n/translations.<locale>.json`
   Per-locale translations written by the tool and optionally reviewed by humans.
 - `l10n/.cache.json`
-  Translation cache keyed by source hash, locale, and model version.
+  Translation cache keyed by source hash, locale, provider config hash, and model version. Changing the glossary or provider settings automatically invalidates affected entries.
 - `l10n/.history.jsonl`
   Append-only operational history.
 - `l10n/.state.json`
@@ -310,9 +310,9 @@ This shows:
 - missing translations
 - stale translations
 - removed entries
-- cache hits
+- cache hits (skipped provider calls)
 - estimated provider requests
-- platform write counts
+- reviewed-stale skips
 
 #### 7. Apply the first sync
 
@@ -582,6 +582,8 @@ When handling repo conflicts:
 
 ## Development
 
+To work on the CLI codebase:
+
 ```bash
 npm install
 npm run build
@@ -589,14 +591,22 @@ npm test
 npm run repo:public-check
 ```
 
-Useful local commands:
+After `npm link`, use the installed binary directly:
+
+```bash
+l10n-agent check
+l10n-agent doctor
+l10n-agent dedupe
+l10n-agent repair --dry-run
+l10n-agent sync --dry-run
+```
+
+When working on the TypeScript source and you want to skip the build step, `npm run dev` runs the source directly via `tsx`:
 
 ```bash
 npm run typecheck
 npm run dev -- check
-npm run dev -- doctor
-npm run dev -- dedupe
-npm run dev -- repair --dry-run
+npm run dev -- sync --dry-run
 ```
 
 ## Testing and publish safety
@@ -604,7 +614,7 @@ npm run dev -- repair --dry-run
 - Tests stay offline. Provider-backed flows use recorded Codex fixtures rather than live requests.
 - Persisted JSON is stable-sorted for predictable diffs and lower merge-conflict churn.
 - `npm run repo:public-check` runs the secret scan and inspects the publish payload with `npm pack --dry-run`.
-- The published package is restricted to `dist/` and `README.md`.
+- The published package includes `dist/`, `README.md`, and `CHANGELOG.md`.
 
 Do not commit:
 
