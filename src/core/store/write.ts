@@ -1,7 +1,8 @@
 import { rm } from 'node:fs/promises';
 
-import { writeJsonFileAtomic, writeTextFileAtomic } from '../../utils/fs.js';
+import { appendTextFile, writeJsonFileAtomic } from '../../utils/fs.js';
 import type {
+  CacheEntry,
   CacheFile,
   HistoryEntry,
   SyncStateFile,
@@ -32,9 +33,16 @@ export async function writeCacheFile(
   path: string,
   entries: CacheFile['entries'],
 ): Promise<void> {
+  const sortedEntries = [...entries].sort(
+    (left, right) =>
+      left.source_hash.localeCompare(right.source_hash) ||
+      left.locale.localeCompare(right.locale) ||
+      left.model_version.localeCompare(right.model_version) ||
+      left.cached_at.localeCompare(right.cached_at),
+  );
   await writeJsonFileAtomic(path, {
-    entries,
-    version: 1,
+    entries: sortedEntries,
+    version: 2,
   } satisfies CacheFile);
 }
 
@@ -54,13 +62,27 @@ export async function removeFileIfExists(path: string): Promise<void> {
 
 export async function appendHistoryEntries(
   path: string,
-  existingEntries: HistoryEntry[] | null,
+  _existingEntries: HistoryEntry[] | null,
   newEntries: HistoryEntry[],
 ): Promise<void> {
   if (newEntries.length === 0) {
     return;
   }
 
-  const lines = [...(existingEntries ?? []), ...newEntries].map((entry) => JSON.stringify(entry));
-  await writeTextFileAtomic(path, `${lines.join('\n')}\n`);
+  const lines = newEntries.map((entry) => JSON.stringify(entry));
+  await appendTextFile(path, `${lines.join('\n')}\n`);
+}
+
+export function upsertCacheEntry(entries: CacheEntry[], entry: CacheEntry): CacheEntry[] {
+  return [
+    ...entries.filter(
+      (current) =>
+        !(
+          current.source_hash === entry.source_hash &&
+          current.locale === entry.locale &&
+          current.model_version === entry.model_version
+        ),
+    ),
+    entry,
+  ];
 }

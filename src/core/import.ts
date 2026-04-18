@@ -176,7 +176,7 @@ export async function runImport(
     });
   }
 
-  const diagnostics: Diagnostic[] = [];
+  const diagnostics: Diagnostic[] = [...snapshot.diagnostics];
   const report: ImportReport = {
     diagnostics,
     ok: true,

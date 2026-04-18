@@ -18,7 +18,7 @@ import { runRename } from '../core/rename.js';
 import { runRollback } from '../core/rollback.js';
 import { buildStatusReport } from '../core/status.js';
 import { loadProjectSnapshot } from '../core/store/load.js';
-import { buildSyncPlan, runSync } from '../core/sync.js';
+import { buildSyncPlan, interruptActiveSync, runSync } from '../core/sync.js';
 import { L10nError } from '../errors/l10n-error.js';
 import { CodexLocalProvider, codexPreflight } from '../providers/codex-local.js';
 import {
@@ -89,6 +89,10 @@ function printFatalError(error: unknown, options: Pick<GlobalOptions, 'json' | '
 
 function getExitCodeForError(error: unknown): number {
   if (error instanceof L10nError) {
+    if (error.diagnostic.code === 'L10N_E0079') {
+      return 6;
+    }
+
     if (['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)) {
       return 3;
     }
@@ -181,7 +185,33 @@ function createSpinner(enabled: boolean): SpinnerHandle {
   };
 }
 
+let signalExitInFlight = false;
+
+async function handleSignal(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
+  if (signalExitInFlight) {
+    return;
+  }
+
+  signalExitInFlight = true;
+  const exitCode = signal === 'SIGINT' ? 130 : 143;
+
+  try {
+    await interruptActiveSync();
+  } catch (error) {
+    printFatalError(error, { json: false, verbose: true });
+  } finally {
+    process.exit(exitCode);
+  }
+}
+
 const program = new Command();
+process.on('SIGINT', () => {
+  void handleSignal('SIGINT');
+});
+process.on('SIGTERM', () => {
+  void handleSignal('SIGTERM');
+});
+
 program
   .name('l10n-agent')
   .description('Local-first CLI for canonical localization workflows.')
@@ -443,7 +473,7 @@ program
     await runAction(this, async (options) => {
       const commandOptions = this.opts<{ locale: string[] }>();
       const snapshot = await loadProjectSnapshot(options.cwd, options.config);
-      const report = buildStatusReport(snapshot, {
+      const report = await buildStatusReport(snapshot, {
         locales: commandOptions.locale,
       });
       printStatusReport(report, options);

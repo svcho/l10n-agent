@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { buildStatusReport } from '../../src/core/status.js';
-import { computeSourceHash } from '../../src/core/store/hash.js';
+import { computeConfigHash, computeSourceFileHash, computeSourceHash } from '../../src/core/store/hash.js';
 import { loadProjectSnapshot } from '../../src/core/store/load.js';
 import { stableStringify } from '../../src/utils/json.js';
 
@@ -19,7 +19,7 @@ describe('buildStatusReport', () => {
   it('reports idle status when no sync is running', async () => {
     const projectDir = await createTempProject('status-idle');
     const snapshot = await loadProjectSnapshot(projectDir);
-    const report = buildStatusReport(snapshot);
+    const report = await buildStatusReport(snapshot);
 
     expect(report.ok).toBe(true);
     expect(report.active_sync).toBeNull();
@@ -63,18 +63,35 @@ describe('buildStatusReport', () => {
     await writeFile(dePath, stableStringify(de), 'utf8');
 
     const statePath = join(projectDir, 'l10n/.state.json');
+    const configSnapshot = await loadProjectSnapshot(projectDir);
     await writeFile(
       statePath,
       stableStringify({
         batch_index: 1,
         completed_translations: 1,
+        config_hash: computeConfigHash(configSnapshot.config),
         current_key: 'settings.notifications.title',
         current_locale: 'es',
         last_processed_key: 'settings.notifications.title',
         last_processed_locale: 'de',
         pid: process.pid,
+        source_hash: computeSourceFileHash({
+          keys: source.keys as typeof configSnapshot.source.value.keys,
+          version: source.version,
+        }),
         started_at: '2026-04-18T10:00:00.000Z',
+        status: 'running',
         total_translations: 2,
+        updated_at: '2026-04-18T10:01:00.000Z',
+        version: 1,
+      }),
+      'utf8',
+    );
+    await writeFile(
+      join(projectDir, 'l10n/.lock'),
+      stableStringify({
+        pid: process.pid,
+        started_at: '2026-04-18T10:00:00.000Z',
         updated_at: '2026-04-18T10:01:00.000Z',
         version: 1,
       }),
@@ -82,7 +99,7 @@ describe('buildStatusReport', () => {
     );
 
     const snapshot = await loadProjectSnapshot(projectDir);
-    const report = buildStatusReport(snapshot);
+    const report = await buildStatusReport(snapshot);
 
     expect(report.summary.sync_state).toBe('running');
     expect(report.active_sync).toMatchObject({
@@ -134,14 +151,21 @@ describe('buildStatusReport', () => {
     await writeFile(dePath, stableStringify(de), 'utf8');
 
     const statePath = join(projectDir, 'l10n/.state.json');
+    const configSnapshot = await loadProjectSnapshot(projectDir);
     await writeFile(
       statePath,
       stableStringify({
         batch_index: 1,
         completed_translations: 1,
+        config_hash: computeConfigHash(configSnapshot.config),
         last_processed_key: 'settings.notifications.title',
         last_processed_locale: 'de',
+        source_hash: computeSourceFileHash({
+          keys: source.keys as typeof configSnapshot.source.value.keys,
+          version: source.version,
+        }),
         started_at: '2026-04-18T10:00:00.000Z',
+        status: 'interrupted',
         total_translations: 2,
         updated_at: '2026-04-18T10:01:00.000Z',
         version: 1,
@@ -150,7 +174,7 @@ describe('buildStatusReport', () => {
     );
 
     const snapshot = await loadProjectSnapshot(projectDir);
-    const report = buildStatusReport(snapshot);
+    const report = await buildStatusReport(snapshot);
 
     expect(report.summary.sync_state).toBe('interrupted');
     expect(report.active_sync).toMatchObject({

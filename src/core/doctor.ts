@@ -2,6 +2,7 @@ import { AndroidStringsAdapter } from '../adapters/android/strings.js';
 import { createIosAdapter } from '../adapters/ios/index.js';
 import type { TranslationRequest } from '../providers/base.js';
 import type { CodexPreflightResult } from '../providers/codex-local.js';
+import type { Diagnostic } from './diagnostics.js';
 import { buildSyncPlan } from './sync.js';
 import type { ProjectSnapshot } from './store/load.js';
 
@@ -18,6 +19,7 @@ export interface DoctorLocaleReport {
 export interface DoctorReport {
   cache_entries: number;
   codex: CodexPreflightResult;
+  diagnostics: Diagnostic[];
   estimated_requests: {
     notes: string | null;
     requests: number | null;
@@ -131,8 +133,9 @@ export async function buildDoctorReport(
       : null;
 
   return {
-    cache_entries: snapshot.cache.value ? Object.keys(snapshot.cache.value.entries).length : 0,
+    cache_entries: snapshot.cache.value ? snapshot.cache.value.entries.length : 0,
     codex,
+    diagnostics: snapshot.diagnostics,
     estimated_requests: {
       notes: estimatedRequests?.notes ?? null,
       requests: estimatedRequests?.requests ?? null,

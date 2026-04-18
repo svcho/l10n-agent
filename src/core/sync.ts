@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { access, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import process from 'node:process';
 
@@ -7,7 +7,9 @@ import { buildCanonicalKeySetFromSource, type ExtendedCanonicalKeySet } from '..
 import { isIosStringsPath, resolveIosStringsLocalePath } from '../adapters/ios/strings.js';
 import { L10nError } from '../errors/l10n-error.js';
 import type { TranslationProvider, TranslationRequest } from '../providers/base.js';
-import { readTextFile, writeTextFileAtomic } from '../utils/fs.js';
+import { readTextFile, writeJsonFileAtomic, writeTextFileAtomic } from '../utils/fs.js';
+import type { SyncLockHandle } from '../utils/lock.js';
+import { acquireSyncLock } from '../utils/lock.js';
 import type { Diagnostic } from './diagnostics.js';
 import { hasErrorDiagnostics } from './diagnostics.js';
 import {
@@ -34,10 +36,12 @@ import type {
 import {
   appendHistoryEntries,
   removeFileIfExists,
+  upsertCacheEntry,
   writeCacheFile,
   writeSyncState,
   writeTranslationFile,
 } from './store/write.js';
+import { computeConfigHash, computeSourceFileHash } from './store/hash.js';
 
 export interface SyncTask {
   cacheHit: {
@@ -116,6 +120,14 @@ interface MutableLocaleState extends TranslationLocaleState {
   dirty: boolean;
 }
 
+interface ActiveSyncContext {
+  latestState: SyncStateFile | null;
+  lock: SyncLockHandle;
+  snapshot: ProjectSnapshot;
+}
+
+let activeSyncContext: ActiveSyncContext | null = null;
+
 function buildPlaceholderSignature(source: SourceKey, text: string): { counts: string; types: string } {
   const names = extractIcuPlaceholderNames(text).sort();
   const counts = names.join('|');
@@ -139,28 +151,28 @@ function hasPlaceholderParity(source: SourceKey, targetText: string): boolean {
   return sourceSignature.counts === targetSignature.counts && sourceSignature.types === targetSignature.types;
 }
 
+function createInternalInvariantError(summary: string, details: Record<string, string> = {}): L10nError {
+  return new L10nError({
+    code: 'L10N_E0081',
+    details,
+    level: 'error',
+    next: 'This should not happen in a healthy run. Capture the diagnostic details and inspect the surrounding sync state.',
+    summary,
+  });
+}
+
 function findCacheEntry(
   cache: CacheFile['entries'],
   sourceHash: string,
   locale: string,
 ): SyncTask['cacheHit'] {
-  const matchingEntries = Object.entries(cache)
-    .flatMap(([cacheKey, entry]) => {
-      const [cachedHash, cachedLocale, ...modelParts] = cacheKey.split('|');
-      const modelVersion = modelParts.join('|');
-
-      if (cachedHash !== sourceHash || cachedLocale !== locale || modelVersion.length === 0) {
-        return [];
-      }
-
-      return [
-        {
-          cachedAt: entry.cached_at,
-          modelVersion,
-          text: entry.text,
-        },
-      ];
-    })
+  const matchingEntries = cache
+    .filter((entry) => entry.source_hash === sourceHash && entry.locale === locale)
+    .map((entry) => ({
+      cachedAt: entry.cached_at,
+      modelVersion: entry.model_version,
+      text: entry.text,
+    }))
     .sort((left, right) => right.cachedAt.localeCompare(left.cachedAt));
 
   return matchingEntries[0] ?? null;
@@ -200,7 +212,7 @@ function buildTranslationRequest(
   const canonicalValue = sourceValue.get(key);
 
   if (!sourceKey || !canonicalValue) {
-    throw new Error(`Missing source key metadata for ${key}`);
+    throw createInternalInvariantError('Missing source key metadata while building a sync request', { key });
   }
 
   return {
@@ -243,9 +255,28 @@ async function discoverRemovedTranslationFiles(
     .sort((left, right) => left.locale.localeCompare(right.locale));
 }
 
-function buildArchivePath(l10nDir: string, locale: string, timestamp: string): string {
+function buildArchivePath(l10nDir: string, locale: string, timestamp: string, suffix = ''): string {
   const safeTimestamp = timestamp.replaceAll(/[-:.TZ]/g, '').slice(0, 14);
-  return resolve(l10nDir, '.archive', `translations.${locale}.${safeTimestamp}.json`);
+  return resolve(l10nDir, '.archive', `translations.${locale}.${safeTimestamp}${suffix}.json`);
+}
+
+async function resolveUniqueArchivePath(l10nDir: string, locale: string, timestamp: string): Promise<string> {
+  let attempt = 0;
+
+  while (true) {
+    const suffix = attempt === 0 ? '' : `-${attempt}`;
+    const candidate = buildArchivePath(l10nDir, locale, timestamp, suffix);
+    try {
+      await access(candidate);
+      attempt += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return candidate;
+      }
+
+      throw error;
+    }
+  }
 }
 
 async function archiveRemovedTranslations(
@@ -255,7 +286,7 @@ async function archiveRemovedTranslations(
 ): Promise<void> {
   for (const translation of removedTranslations) {
     const rawText = await readTextFile(translation.path);
-    await writeTextFileAtomic(buildArchivePath(l10nDir, translation.locale, timestamp), rawText);
+    await writeTextFileAtomic(await resolveUniqueArchivePath(l10nDir, translation.locale, timestamp), rawText);
     await removeFileIfExists(translation.path);
   }
 }
@@ -268,7 +299,7 @@ export function buildSyncPlan(
   const sourceKeys = Object.keys(snapshot.source.value.keys).sort();
   const sourceKeySet = new Set(sourceKeys);
   const canonicalSource = buildCanonicalKeySetFromSource(snapshot.source.value);
-  const cacheEntries = snapshot.cache.value?.entries ?? {};
+  const cacheEntries = snapshot.cache.value?.entries ?? [];
   const translationByLocale = new Map(snapshot.translations.map((translation) => [translation.locale, translation]));
 
   const locales = selectedLocales.map((locale): LocaleSyncPlan => {
@@ -374,6 +405,39 @@ function createMutableLocaleState(snapshot: ProjectSnapshot, locale: string): Mu
   };
 }
 
+function buildOrphanedReviewedArchivePath(
+  l10nDir: string,
+  locale: string,
+  timestamp: string,
+  suffix = '',
+): string {
+  const safeTimestamp = timestamp.replaceAll(/[-:.TZ]/g, '').slice(0, 14);
+  return resolve(l10nDir, '.snapshots', 'orphaned-reviewed', `${locale}-${safeTimestamp}${suffix}.json`);
+}
+
+async function resolveUniqueOrphanedReviewedArchivePath(
+  l10nDir: string,
+  locale: string,
+  timestamp: string,
+): Promise<string> {
+  let attempt = 0;
+
+  while (true) {
+    const suffix = attempt === 0 ? '' : `-${attempt}`;
+    const candidate = buildOrphanedReviewedArchivePath(l10nDir, locale, timestamp, suffix);
+    try {
+      await access(candidate);
+      attempt += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return candidate;
+      }
+
+      throw error;
+    }
+  }
+}
+
 function createReviewedStaleWarning(key: string, locale: string): Diagnostic {
   return {
     code: 'L10N_E0064',
@@ -399,6 +463,36 @@ function createPlaceholderDiagnostic(key: string, locale: string, source: string
   };
 }
 
+function createReviewedPlaceholderDivergenceDiagnostic(
+  key: string,
+  locale: string,
+  source: string,
+  target: string,
+): Diagnostic {
+  return {
+    code: 'L10N_E0082',
+    details: {
+      key,
+      locale,
+      source,
+      target,
+    },
+    level: 'error',
+    next: 'Fix the reviewed translation manually so its placeholders match the current source, or clear reviewed=true before re-running sync.',
+    summary: 'Reviewed translation no longer matches the current source placeholders',
+  };
+}
+
+function createReviewedSourceKeyRemovedWarning(key: string, locale: string, archivePath: string): Diagnostic {
+  return {
+    code: 'L10N_E0083',
+    details: { archive_path: archivePath, key, locale },
+    level: 'warn',
+    next: 'Review the archived translation and restore it manually if the key should still exist under a different canonical name.',
+    summary: 'Reviewed translation was archived because its source key was removed',
+  };
+}
+
 async function persistLocaleState(
   localeState: MutableLocaleState,
 ): Promise<void> {
@@ -419,22 +513,26 @@ function createSyncProgressMessage(
   return `${action} (${completed}/${total}) ${task.locale} ${task.key}`;
 }
 
-async function persistSyncProgressState(
+function buildSyncState(
   snapshot: ProjectSnapshot,
   options: {
     completedTranslations: number;
     currentTask?: Pick<SyncTask, 'key' | 'locale'> | null;
     lastCompletedTask?: Pick<SyncTask, 'key' | 'locale'> | null;
     startedAt: string;
+    status?: SyncStateFile['status'];
     totalTranslations: number;
   },
-): Promise<void> {
+): SyncStateFile {
   const timestamp = new Date().toISOString();
-  const state: SyncStateFile = {
+  return {
     batch_index: options.completedTranslations,
     completed_translations: options.completedTranslations,
+    config_hash: computeConfigHash(snapshot.config),
     pid: process.pid,
+    source_hash: computeSourceFileHash(snapshot.source.value),
     started_at: options.startedAt,
+    status: options.status ?? 'running',
     total_translations: options.totalTranslations,
     updated_at: timestamp,
     version: 1,
@@ -451,15 +549,57 @@ async function persistSyncProgressState(
         }
       : {}),
   };
+}
 
+async function persistSyncProgressState(
+  snapshot: ProjectSnapshot,
+  options: {
+    completedTranslations: number;
+    currentTask?: Pick<SyncTask, 'key' | 'locale'> | null;
+    lastCompletedTask?: Pick<SyncTask, 'key' | 'locale'> | null;
+    startedAt: string;
+    totalTranslations: number;
+  },
+): Promise<void> {
+  const state = buildSyncState(snapshot, options);
   await writeSyncState(snapshot.state.path, state);
+  await activeSyncContext?.lock.refresh();
+  if (activeSyncContext && activeSyncContext.snapshot.state.path === snapshot.state.path) {
+    activeSyncContext.latestState = state;
+  }
+}
+
+export async function interruptActiveSync(): Promise<boolean> {
+  if (!activeSyncContext) {
+    return false;
+  }
+
+  const state =
+    activeSyncContext.latestState ??
+    buildSyncState(activeSyncContext.snapshot, {
+      completedTranslations: 0,
+      startedAt: new Date().toISOString(),
+      status: 'interrupted',
+      totalTranslations: 0,
+    });
+  const interruptedState: SyncStateFile = {
+    ...state,
+    status: 'interrupted',
+    updated_at: new Date().toISOString(),
+  };
+
+  await writeSyncState(activeSyncContext.snapshot.state.path, interruptedState);
+  await activeSyncContext.lock.release();
+  activeSyncContext.latestState = interruptedState;
+  activeSyncContext = null;
+  return true;
 }
 
 export async function runSync(
   snapshot: ProjectSnapshot,
   options: SyncOptions = {},
 ): Promise<SyncReport> {
-  const diagnostics = lintSourceKeys(snapshot.config, snapshot.source.value);
+  const diagnostics = [...snapshot.diagnostics, ...lintSourceKeys(snapshot.config, snapshot.source.value)];
   const selectedLocales = getSelectedLocales(snapshot, options.locales);
   const removedTranslationFiles = await discoverRemovedTranslationFiles(snapshot, selectedLocales);
   const addedLocales = snapshot.translations
@@ -503,23 +643,91 @@ export async function runSync(
     };
   }
 
-  for (const localePlan of plan.locales) {
-    const translation = snapshot.translations.find((candidate) => candidate.locale === localePlan.locale);
-    const existingEntries = translation?.value?.entries ?? {};
+  const localeStates = new Map(selectedLocales.map((locale) => [locale, createMutableLocaleState(snapshot, locale)]));
+  const orphanedReviewedArchives: Array<{
+    entries: Record<string, TranslationEntry>;
+    locale: string;
+    path: string;
+  }> = [];
 
-    for (const key of Object.keys(existingEntries)) {
+  for (const localePlan of plan.locales) {
+    const translationState = localeStates.get(localePlan.locale);
+    if (!translationState) {
+      continue;
+    }
+
+    for (const [key, existingEntry] of Object.entries(translationState.entries)) {
       if (!(key in snapshot.source.value.keys)) {
         continue;
       }
 
-      const existingEntry = existingEntries[key];
+      const sourceKey = snapshot.source.value.keys[key];
       const expectedHash = snapshot.source.hashes.get(key);
-      if (!existingEntry || !expectedHash || existingEntry.source_hash === expectedHash || !existingEntry.reviewed) {
+      if (
+        !sourceKey ||
+        !existingEntry ||
+        !expectedHash ||
+        existingEntry.source_hash === expectedHash ||
+        !existingEntry.reviewed
+      ) {
         continue;
       }
 
-      diagnostics.push(createReviewedStaleWarning(key, localePlan.locale));
+      diagnostics.push(
+        hasPlaceholderParity(sourceKey, existingEntry.text)
+          ? createReviewedStaleWarning(key, localePlan.locale)
+          : createReviewedPlaceholderDivergenceDiagnostic(
+              key,
+              localePlan.locale,
+              sourceKey.text,
+              existingEntry.text,
+            ),
+      );
     }
+
+    const translation = snapshot.translations.find((candidate) => candidate.locale === localePlan.locale);
+    const existingEntries = translation?.value?.entries ?? {};
+    const orphanedReviewedEntries = Object.fromEntries(
+      Object.entries(existingEntries).filter(
+        ([key, entry]) => !(key in snapshot.source.value.keys) && entry.reviewed,
+      ),
+    );
+    if (Object.keys(orphanedReviewedEntries).length > 0) {
+      const archivePath = await resolveUniqueOrphanedReviewedArchivePath(
+        snapshot.l10nDir,
+        localePlan.locale,
+        new Date().toISOString(),
+      );
+      diagnostics.push(
+        ...Object.keys(orphanedReviewedEntries)
+          .sort()
+          .map((key) => createReviewedSourceKeyRemovedWarning(key, localePlan.locale, archivePath)),
+      );
+
+      orphanedReviewedArchives.push({
+        entries: orphanedReviewedEntries,
+        locale: localePlan.locale,
+        path: archivePath,
+      });
+    }
+  }
+
+  if (hasErrorDiagnostics(diagnostics)) {
+    return {
+      diagnostics,
+      ok: false,
+      resumed_from: resumedFrom,
+      summary: {
+        cache_hits: plan.total_cache_hits,
+        locales: selectedLocales.length,
+        pending_tasks: plan.total_pending_tasks,
+        provider_requests: plan.total_pending_tasks - plan.total_cache_hits,
+        removed: plan.total_removed,
+        reviewed_skipped: plan.review_skips,
+        source_keys: plan.source_keys,
+        translated: 0,
+      },
+    };
   }
 
   if (options.dryRun) {
@@ -541,7 +749,7 @@ export async function runSync(
   }
 
   if (!options.provider) {
-    throw new Error('sync requires a translation provider');
+    throw createInternalInvariantError('sync requires a translation provider');
   }
 
   const preflight = options.provider.preflight ? await options.provider.preflight() : { ok: true };
@@ -555,8 +763,7 @@ export async function runSync(
     });
   }
 
-  const localeStates = new Map(selectedLocales.map((locale) => [locale, createMutableLocaleState(snapshot, locale)]));
-  const cacheEntries = structuredClone(snapshot.cache.value?.entries ?? {});
+  const cacheEntries = structuredClone(snapshot.cache.value?.entries ?? []);
   let completedTranslations = 0;
   let translated = 0;
   let cacheHits = 0;
@@ -565,29 +772,53 @@ export async function runSync(
   const historyEntries = [...(snapshot.history.value ?? [])];
   const historyTimestamp = new Date().toISOString();
   const historyId = buildHistoryId(historyTimestamp, 'sync');
-  await snapshotManagedFiles(
-    snapshot.rootDir,
-    snapshot.l10nDir,
-    historyId,
-    getManagedFilePathsWithExtras(snapshot, [
-      ...removedTranslationFiles.map((translation) => translation.path),
-      ...removedTranslationFiles.flatMap((translation) =>
-        snapshot.platformPaths.android
-          ? [resolveAndroidLocalePath(snapshot.platformPaths.android, snapshot.config.source_locale, translation.locale)]
-          : [],
-      ),
-      ...removedTranslationFiles.flatMap((translation) =>
-        snapshot.platformPaths.ios && isIosStringsPath(snapshot.platformPaths.ios)
-          ? [resolveIosStringsLocalePath(snapshot.platformPaths.ios, snapshot.config.source_locale, translation.locale)]
-          : [],
-      ),
-    ]),
-  );
+  const lock = await acquireSyncLock(snapshot.l10nDir);
+  activeSyncContext = {
+    latestState: buildSyncState(snapshot, {
+      completedTranslations,
+      lastCompletedTask,
+      startedAt,
+      totalTranslations: plan.total_pending_tasks,
+    }),
+    lock,
+    snapshot,
+  };
 
-  if (plan.total_pending_tasks > 0) {
+  try {
+    await snapshotManagedFiles(
+      snapshot.rootDir,
+      snapshot.l10nDir,
+      historyId,
+      getManagedFilePathsWithExtras(snapshot, [
+        ...removedTranslationFiles.map((translation) => translation.path),
+        ...removedTranslationFiles.flatMap((translation) =>
+          snapshot.platformPaths.android
+            ? [resolveAndroidLocalePath(snapshot.platformPaths.android, snapshot.config.source_locale, translation.locale)]
+            : [],
+        ),
+        ...removedTranslationFiles.flatMap((translation) =>
+          snapshot.platformPaths.ios && isIosStringsPath(snapshot.platformPaths.ios)
+            ? [resolveIosStringsLocalePath(snapshot.platformPaths.ios, snapshot.config.source_locale, translation.locale)]
+            : [],
+        ),
+        ...orphanedReviewedArchives.map((archive) => archive.path),
+      ]),
+    );
+
+    for (const archive of orphanedReviewedArchives) {
+      await writeJsonFileAtomic(archive.path, {
+        entries: archive.entries,
+        locale: archive.locale,
+        version: 1,
+      });
+    }
+
     options.onProgress?.({
       completed: completedTranslations,
-      message: `Preparing sync for ${plan.total_pending_tasks} translations`,
+      message:
+        plan.total_pending_tasks > 0
+          ? `Preparing sync for ${plan.total_pending_tasks} translations`
+          : 'Writing derived translation and platform files',
       total: plan.total_pending_tasks,
     });
     await persistSyncProgressState(snapshot, {
@@ -596,224 +827,236 @@ export async function runSync(
       startedAt,
       totalTranslations: plan.total_pending_tasks,
     });
-  } else {
-    options.onProgress?.({
-      completed: 0,
-      message: 'Writing derived translation and platform files',
-      total: 0,
-    });
-  }
 
-  for (const localePlan of plan.locales) {
-    const localeState = localeStates.get(localePlan.locale);
-    if (!localeState) {
-      continue;
-    }
-
-    for (const [key, entry] of Object.entries(localeState.entries)) {
-      const expectedHash = snapshot.source.hashes.get(key);
-      if (expectedHash && entry.reviewed && entry.source_hash !== expectedHash && !entry.stale) {
-        localeState.entries[key] = {
-          ...entry,
-          stale: true,
-        };
-        localeState.dirty = true;
-      } else if (expectedHash && entry.source_hash === expectedHash && entry.stale) {
-        localeState.entries[key] = {
-          ...entry,
-          stale: false,
-        };
-        localeState.dirty = true;
+    for (const localePlan of plan.locales) {
+      const localeState = localeStates.get(localePlan.locale);
+      if (!localeState) {
+        continue;
       }
-    }
 
-    for (const task of localePlan.pending_tasks) {
-      const nextCompleted = completedTranslations + 1;
-      options.onProgress?.({
-        completed: completedTranslations,
-        current_key: task.key,
-        current_locale: task.locale,
-        message: createSyncProgressMessage(task, nextCompleted, plan.total_pending_tasks),
-        total: plan.total_pending_tasks,
-      });
-      await persistSyncProgressState(snapshot, {
-        completedTranslations,
-        currentTask: task,
-        lastCompletedTask,
-        startedAt,
-        totalTranslations: plan.total_pending_tasks,
-      });
+      for (const [key, entry] of Object.entries(localeState.entries)) {
+        const expectedHash = snapshot.source.hashes.get(key);
+        if (expectedHash && entry.reviewed && entry.source_hash !== expectedHash && !entry.stale) {
+          localeState.entries[key] = {
+            ...entry,
+            stale: true,
+          };
+          localeState.dirty = true;
+        } else if (expectedHash && entry.source_hash === expectedHash && entry.stale) {
+          localeState.entries[key] = {
+            ...entry,
+            stale: false,
+          };
+          localeState.dirty = true;
+        }
+      }
 
-      if (task.cacheHit) {
+      for (const task of localePlan.pending_tasks) {
+        const nextCompleted = completedTranslations + 1;
+        options.onProgress?.({
+          completed: completedTranslations,
+          current_key: task.key,
+          current_locale: task.locale,
+          message: createSyncProgressMessage(task, nextCompleted, plan.total_pending_tasks),
+          total: plan.total_pending_tasks,
+        });
+        await persistSyncProgressState(snapshot, {
+          completedTranslations,
+          currentTask: task,
+          lastCompletedTask,
+          startedAt,
+          totalTranslations: plan.total_pending_tasks,
+        });
+
+        if (task.cacheHit) {
+          localeState.entries[task.key] = {
+            model_version: task.cacheHit.modelVersion,
+            provider: options.provider.id,
+            reviewed: false,
+            source_hash: task.sourceHash,
+            stale: false,
+            text: task.cacheHit.text,
+            translated_at: task.cacheHit.cachedAt,
+          };
+          localeState.dirty = true;
+          cacheHits += 1;
+          completedTranslations += 1;
+          lastCompletedTask = {
+            key: task.key,
+            locale: task.locale,
+          };
+          await persistLocaleState(localeState);
+          await persistSyncProgressState(snapshot, {
+            completedTranslations,
+            lastCompletedTask,
+            startedAt,
+            totalTranslations: plan.total_pending_tasks,
+          });
+          continue;
+        }
+
+        let result;
+        try {
+          result = await options.provider.translate(task.request);
+        } catch (error) {
+          if (
+            error instanceof L10nError &&
+            ['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)
+          ) {
+            const timestamp = new Date().toISOString();
+            await persistSyncProgressState(snapshot, {
+              completedTranslations,
+              currentTask: task,
+              lastCompletedTask,
+              startedAt,
+              totalTranslations: plan.total_pending_tasks,
+            });
+            await appendHistoryEntries(snapshot.history.path, historyEntries, [
+              createSyncHistoryEntry(
+                historyId,
+                timestamp,
+                `${completedTranslations} of ${plan.total_pending_tasks} translations completed before ${error.diagnostic.code}`,
+              ),
+            ]);
+
+            throw error;
+          }
+
+          throw error;
+        }
+
+        const sourceKey = snapshot.source.value.keys[task.key];
+        if (!sourceKey) {
+          throw createInternalInvariantError('Missing source key metadata after a provider translation completed', {
+            key: task.key,
+            locale: task.locale,
+          });
+        }
+
+        if (!hasPlaceholderParity(sourceKey, result.text)) {
+          diagnostics.push(
+            createPlaceholderDiagnostic(task.key, task.locale, task.request.sourceText, result.text),
+          );
+
+          if (options.strict) {
+            await removeFileIfExists(snapshot.state.path);
+            return {
+              diagnostics,
+              ok: false,
+              resumed_from: resumedFrom,
+              summary: {
+                cache_hits: cacheHits,
+                locales: selectedLocales.length,
+                pending_tasks: plan.total_pending_tasks,
+                provider_requests: plan.total_pending_tasks - plan.total_cache_hits,
+                removed: plan.total_removed,
+                reviewed_skipped: plan.review_skips,
+                source_keys: plan.source_keys,
+                translated,
+              },
+            };
+          }
+
+          continue;
+        }
+
+        const timestamp = new Date().toISOString();
         localeState.entries[task.key] = {
-          model_version: task.cacheHit.modelVersion,
+          model_version: result.modelVersion,
           provider: options.provider.id,
           reviewed: false,
           source_hash: task.sourceHash,
           stale: false,
-          text: task.cacheHit.text,
-          translated_at: task.cacheHit.cachedAt,
+          text: result.text,
+          translated_at: timestamp,
         };
+        cacheEntries.splice(
+          0,
+          cacheEntries.length,
+          ...upsertCacheEntry(cacheEntries, {
+            cached_at: timestamp,
+            locale: task.locale,
+            model_version: result.modelVersion,
+            source_hash: task.sourceHash,
+            text: result.text,
+          }),
+        );
         localeState.dirty = true;
-        cacheHits += 1;
+        translated += 1;
         completedTranslations += 1;
         lastCompletedTask = {
           key: task.key,
           locale: task.locale,
         };
+
         await persistLocaleState(localeState);
+        await writeCacheFile(snapshot.cache.path, cacheEntries);
         await persistSyncProgressState(snapshot, {
           completedTranslations,
           lastCompletedTask,
           startedAt,
           totalTranslations: plan.total_pending_tasks,
         });
-        continue;
       }
-
-      let result;
-      try {
-        result = await options.provider.translate(task.request);
-      } catch (error) {
-        if (error instanceof L10nError && ['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)) {
-          const timestamp = new Date().toISOString();
-          await persistSyncProgressState(snapshot, {
-            completedTranslations,
-            currentTask: task,
-            lastCompletedTask,
-            startedAt,
-            totalTranslations: plan.total_pending_tasks,
-          });
-          await appendHistoryEntries(snapshot.history.path, historyEntries, [
-            createSyncHistoryEntry(
-              historyId,
-              timestamp,
-              `${completedTranslations} of ${plan.total_pending_tasks} translations completed before ${error.diagnostic.code}`,
-            ),
-          ]);
-
-          throw error;
-        }
-
-        throw error;
-      }
-
-      const sourceKey = snapshot.source.value.keys[task.key];
-      if (!sourceKey) {
-        continue;
-      }
-
-      if (!hasPlaceholderParity(sourceKey, result.text)) {
-        diagnostics.push(
-          createPlaceholderDiagnostic(task.key, task.locale, task.request.sourceText, result.text),
-        );
-
-        if (options.strict) {
-          await removeFileIfExists(snapshot.state.path);
-          return {
-            diagnostics,
-            ok: false,
-            resumed_from: resumedFrom,
-            summary: {
-              cache_hits: cacheHits,
-              locales: selectedLocales.length,
-              pending_tasks: plan.total_pending_tasks,
-              provider_requests: plan.total_pending_tasks - plan.total_cache_hits,
-              removed: plan.total_removed,
-              reviewed_skipped: plan.review_skips,
-              source_keys: plan.source_keys,
-              translated,
-            },
-          };
-        }
-
-        continue;
-      }
-
-      const timestamp = new Date().toISOString();
-      localeState.entries[task.key] = {
-        model_version: result.modelVersion,
-        provider: options.provider.id,
-        reviewed: false,
-        source_hash: task.sourceHash,
-        stale: false,
-        text: result.text,
-        translated_at: timestamp,
-      };
-      cacheEntries[`${task.sourceHash}|${task.locale}|${result.modelVersion}`] = {
-        cached_at: timestamp,
-        text: result.text,
-      };
-      localeState.dirty = true;
-      translated += 1;
-      completedTranslations += 1;
-      lastCompletedTask = {
-        key: task.key,
-        locale: task.locale,
-      };
 
       await persistLocaleState(localeState);
-      await writeCacheFile(snapshot.cache.path, cacheEntries);
-      await persistSyncProgressState(snapshot, {
-        completedTranslations,
-        lastCompletedTask,
-        startedAt,
-        totalTranslations: plan.total_pending_tasks,
-      });
     }
 
-    await persistLocaleState(localeState);
-  }
+    for (const localeState of localeStates.values()) {
+      await persistLocaleState(localeState);
+    }
 
-  for (const localeState of localeStates.values()) {
-    await persistLocaleState(localeState);
-  }
+    options.onProgress?.({
+      completed: completedTranslations,
+      message: 'Writing derived translation and platform files',
+      total: plan.total_pending_tasks,
+    });
 
-  options.onProgress?.({
-    completed: completedTranslations,
-    message: 'Writing derived translation and platform files',
-    total: plan.total_pending_tasks,
-  });
+    await writeProjectFiles(snapshot, snapshot.source.value, [...localeStates.values()], {
+      cacheEntries,
+      removeState: true,
+      removedLocales: removedTranslationFiles.map((translation) => translation.locale),
+    });
+    await archiveRemovedTranslations(snapshot.l10nDir, removedTranslationFiles, historyTimestamp);
 
-  await writeProjectFiles(snapshot, snapshot.source.value, [...localeStates.values()], {
-    cacheEntries,
-    removeState: true,
-    removedLocales: removedTranslationFiles.map((translation) => translation.locale),
-  });
-  await archiveRemovedTranslations(snapshot.l10nDir, removedTranslationFiles, historyTimestamp);
-
-  const timestamp = new Date().toISOString();
-  await appendHistoryEntries(snapshot.history.path, historyEntries, [
-    ...addedLocales.map((locale) =>
-      createAddLocaleHistoryEntry(buildHistoryId(timestamp, `add-locale-${locale}`), timestamp, locale),
-    ),
-    ...removedTranslationFiles.map((translation) =>
-      createRemoveLocaleHistoryEntry(
-        buildHistoryId(timestamp, `remove-locale-${translation.locale}`),
-        timestamp,
-        translation.locale,
+    const timestamp = new Date().toISOString();
+    await appendHistoryEntries(snapshot.history.path, historyEntries, [
+      ...addedLocales.map((locale) =>
+        createAddLocaleHistoryEntry(buildHistoryId(timestamp, `add-locale-${locale}`), timestamp, locale),
       ),
-    ),
-    createSyncHistoryEntry(
-      historyId,
-      timestamp,
-      `${translated} translations generated, ${cacheHits} cache hits, ${plan.review_skips} reviewed skipped, ${plan.total_removed} removed`,
-    ),
-  ]);
+      ...removedTranslationFiles.map((translation) =>
+        createRemoveLocaleHistoryEntry(
+          buildHistoryId(timestamp, `remove-locale-${translation.locale}`),
+          timestamp,
+          translation.locale,
+        ),
+      ),
+      createSyncHistoryEntry(
+        historyId,
+        timestamp,
+        `${translated} translations generated, ${cacheHits} cache hits, ${plan.review_skips} reviewed skipped, ${plan.total_removed} removed`,
+      ),
+    ]);
 
-  return {
-    diagnostics,
-    ok: !hasErrorDiagnostics(diagnostics),
-    resumed_from: resumedFrom,
-    summary: {
-      cache_hits: cacheHits,
-      locales: selectedLocales.length,
-      pending_tasks: plan.total_pending_tasks,
-      provider_requests: plan.total_pending_tasks - plan.total_cache_hits,
-      removed: plan.total_removed,
-      reviewed_skipped: plan.review_skips,
-      source_keys: plan.source_keys,
-      translated,
-    },
-  };
+    return {
+      diagnostics,
+      ok: !hasErrorDiagnostics(diagnostics),
+      resumed_from: resumedFrom,
+      summary: {
+        cache_hits: cacheHits,
+        locales: selectedLocales.length,
+        pending_tasks: plan.total_pending_tasks,
+        provider_requests: plan.total_pending_tasks - plan.total_cache_hits,
+        removed: plan.total_removed,
+        reviewed_skipped: plan.review_skips,
+        source_keys: plan.source_keys,
+        translated,
+      },
+    };
+  } finally {
+    if (activeSyncContext && activeSyncContext.snapshot.state.path === snapshot.state.path) {
+      activeSyncContext = null;
+    }
+    await lock.release().catch(() => undefined);
+  }
 }

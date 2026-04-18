@@ -71,9 +71,9 @@ function skipTrivia(text: string, startIndex: number): number {
   return index;
 }
 
-function readQuotedToken(text: string, startIndex: number): { nextIndex: number; value: string } {
+function readQuotedToken(path: string, text: string, startIndex: number): { nextIndex: number; value: string } {
   if (text[startIndex] !== '"') {
-    throw new Error('quoted token must start with a double quote');
+    throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
   }
 
   let index = startIndex + 1;
@@ -84,7 +84,7 @@ function readQuotedToken(text: string, startIndex: number): { nextIndex: number;
     if (current === '\\') {
       const escaped = text[index + 1];
       if (escaped === undefined) {
-        throw new Error('trailing escape in quoted token');
+        throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
       }
       raw += `\\${escaped}`;
       index += 2;
@@ -98,7 +98,7 @@ function readQuotedToken(text: string, startIndex: number): { nextIndex: number;
           value: JSON.parse(`"${raw}"`) as string,
         };
       } catch {
-        throw new Error('invalid escape sequence in quoted token');
+        throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
       }
     }
 
@@ -106,7 +106,7 @@ function readQuotedToken(text: string, startIndex: number): { nextIndex: number;
     index += 1;
   }
 
-  throw new Error('unterminated quoted token');
+  throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
 }
 
 function parseStringsFile(path: string, text: string): Map<string, string> {
@@ -120,22 +120,26 @@ function parseStringsFile(path: string, text: string): Map<string, string> {
     }
 
     try {
-      const keyToken = readQuotedToken(text, index);
+      const keyToken = readQuotedToken(path, text, index);
       index = skipTrivia(text, keyToken.nextIndex);
       if (text[index] !== '=') {
-        throw new Error('expected "=" after key');
+        throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
       }
 
       index = skipTrivia(text, index + 1);
-      const valueToken = readQuotedToken(text, index);
+      const valueToken = readQuotedToken(path, text, index);
       index = skipTrivia(text, valueToken.nextIndex);
       if (text[index] !== ';') {
-        throw new Error('expected ";" after value');
+        throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
       }
 
       entries.set(keyToken.value, valueToken.value);
       index += 1;
-    } catch {
+    } catch (error) {
+      if (error instanceof L10nError) {
+        throw error;
+      }
+
       throw buildPlatformShapeError('Localizable.strings contains malformed content', path);
     }
   }

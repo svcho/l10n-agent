@@ -33,7 +33,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<CheckReport> {
-  const diagnostics: Diagnostic[] = [];
+  const diagnostics: Diagnostic[] = [...snapshot.diagnostics];
   const sourceKeys = Object.keys(snapshot.source.value.keys);
   const sourceKeySet = new Set(sourceKeys);
   const iosAdapterOptions = snapshot.config.platforms.ios
