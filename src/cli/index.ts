@@ -40,6 +40,12 @@ interface GlobalOptions {
   verbose: boolean;
 }
 
+interface SpinnerHandle {
+  start(text: string): void;
+  stop(finalText?: string): void;
+  update(text: string): void;
+}
+
 function getGlobalOptions(command: Command): GlobalOptions {
   const options = command.optsWithGlobals<GlobalOptions>();
   return {
@@ -108,6 +114,69 @@ function createProvider(options: GlobalOptions, minimumVersion: string, model?: 
     minimumVersion,
     ...(model ? { model } : {}),
   });
+}
+
+function createSpinner(enabled: boolean): SpinnerHandle {
+  const frames = ['|', '/', '-', '\\'];
+  let active = false;
+  let frameIndex = 0;
+  let interval: NodeJS.Timeout | null = null;
+  let lastWidth = 0;
+  let text = '';
+
+  const clearLine = () => {
+    if (!enabled) {
+      return;
+    }
+
+    process.stderr.write(`\r${' '.repeat(Math.max(0, lastWidth))}\r`);
+    lastWidth = 0;
+  };
+
+  const render = () => {
+    if (!enabled || !active) {
+      return;
+    }
+
+    const line = `${frames[frameIndex % frames.length]} ${text}`;
+    frameIndex += 1;
+    lastWidth = line.length;
+    process.stderr.write(`\r${line}`);
+  };
+
+  return {
+    start(nextText: string) {
+      text = nextText;
+      if (!enabled || active) {
+        return;
+      }
+
+      active = true;
+      render();
+      interval = setInterval(render, 80);
+    },
+    stop(finalText?: string) {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+
+      if (enabled) {
+        clearLine();
+      }
+
+      active = false;
+      if (finalText) {
+        process.stderr.write(`${finalText}\n`);
+      }
+    },
+    update(nextText: string) {
+      text = nextText;
+      if (enabled && active) {
+        render();
+      }
+    },
+  };
 }
 
 const program = new Command();
@@ -188,30 +257,43 @@ program
               },
             }
           : await (async () => {
+              const spinner = createSpinner(!options.json && process.stderr.isTTY);
               const provider = createProvider(
                 options,
                 snapshot.config.provider.codex_min_version,
                 snapshot.config.provider.model,
               );
-              const preflight = await provider.preflight();
-              if (!preflight.ok) {
-                throw new L10nError({
-                  code: preflight.code ?? 'L10N_E0054',
-                  details: preflight.detectedVersion
-                    ? { detected_version: preflight.detectedVersion }
-                    : {},
-                  level: 'error',
-                  next: preflight.message ?? 'Re-run the command after fixing the provider environment.',
-                  summary: 'Provider preflight failed',
-                });
-              }
+              spinner.start(`Codex is checking lint autofix availability for ${candidates.length} keys`);
 
-              return runLintFix(snapshot, {
-                glossary: commandOptions.glossary,
-                provider: {
-                  planKeyRenames: provider.planKeyRenames.bind(provider),
-                },
-              });
+              try {
+                const preflight = await provider.preflight();
+                if (!preflight.ok) {
+                  throw new L10nError({
+                    code: preflight.code ?? 'L10N_E0054',
+                    details: preflight.detectedVersion
+                      ? { detected_version: preflight.detectedVersion }
+                      : {},
+                    level: 'error',
+                    next: preflight.message ?? 'Re-run the command after fixing the provider environment.',
+                    summary: 'Provider preflight failed',
+                  });
+                }
+
+                const report = await runLintFix(snapshot, {
+                  glossary: commandOptions.glossary,
+                  onProgress(progress) {
+                    spinner.update(progress.message);
+                  },
+                  provider: {
+                    planKeyRenames: provider.planKeyRenames.bind(provider),
+                  },
+                });
+                spinner.stop();
+                return report;
+              } catch (error) {
+                spinner.stop();
+                throw error;
+              }
             })()
         : {
             diagnostics,

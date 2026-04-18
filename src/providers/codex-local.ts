@@ -175,6 +175,44 @@ function classifyCodexFailure(stderr: string, stdout: string): L10nError {
     });
   }
 
+  const sessionPermissionMatch = combined.match(
+    /Codex cannot access session files at (?<path>.+?) \(permission denied\)/i,
+  );
+  if (sessionPermissionMatch?.groups?.path) {
+    return new L10nError({
+      code: 'L10N_E0054',
+      details: { path: sessionPermissionMatch.groups.path },
+      level: 'error',
+      next: `Fix the ownership or permissions for ${sessionPermissionMatch.groups.path}. If those files were created with sudo, run \`sudo chown -R $(whoami) ~/.codex\` and retry.`,
+      summary: 'Codex cannot access its local session files',
+    });
+  }
+
+  const readonlyDatabaseMatch = combined.match(/failed to open state db at (?<path>.+?): .*readonly database/i);
+  if (readonlyDatabaseMatch?.groups?.path) {
+    return new L10nError({
+      code: 'L10N_E0054',
+      details: { path: readonlyDatabaseMatch.groups.path },
+      level: 'error',
+      next: `Fix the ownership or permissions for ${readonlyDatabaseMatch.groups.path} and the rest of ~/.codex, then retry. If needed, run \`sudo chown -R $(whoami) ~/.codex\`.`,
+      summary: 'Codex cannot write to its local state database',
+    });
+  }
+
+  const threadStartFailure = combined
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.startsWith('Error: thread/start:'));
+  if (threadStartFailure) {
+    return new L10nError({
+      code: 'L10N_E0054',
+      details: { cause: threadStartFailure },
+      level: 'error',
+      next: 'Resolve the Codex thread startup error shown above, then re-run the command.',
+      summary: 'Codex could not start a local session',
+    });
+  }
+
   return new L10nError({
     code: 'L10N_E0054',
     details: {},
@@ -539,9 +577,9 @@ export class CodexLocalProvider implements TranslationProvider {
   ): Promise<{ modelVersion: string; plans: KeyRenamePlan[] }> {
     const parsed = await this.runStructuredPrompt<{ plans: Array<{
       from: string;
-      rationale?: string;
-      skip_reason?: string;
-      to?: string;
+      rationale: string | null;
+      skip_reason: string | null;
+      to: string | null;
     }> }>(
       'key-rename-output.schema.json',
       {
@@ -552,11 +590,11 @@ export class CodexLocalProvider implements TranslationProvider {
               additionalProperties: false,
               properties: {
                 from: { type: 'string' },
-                rationale: { type: 'string' },
-                skip_reason: { type: 'string' },
-                to: { type: 'string' },
+                rationale: { type: ['string', 'null'] },
+                skip_reason: { type: ['string', 'null'] },
+                to: { type: ['string', 'null'] },
               },
-              required: ['from'],
+              required: ['from', 'rationale', 'skip_reason', 'to'],
               type: 'object',
             },
             type: 'array',

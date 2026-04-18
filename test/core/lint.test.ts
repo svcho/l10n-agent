@@ -219,4 +219,78 @@ describe('runLintFix', () => {
       'tmp.WelcomeTitle',
     ]);
   });
+
+  it('plans lint autofixes in batches and reports progress', async () => {
+    const projectDir = await createTempProject('lint-fix-batches');
+    const sourcePath = join(projectDir, 'l10n/source.en.json');
+    const dePath = join(projectDir, 'l10n/translations.de.json');
+    const source = JSON.parse(await readFile(sourcePath, 'utf8')) as {
+      keys: Record<string, { description?: string; placeholders: Record<string, unknown>; text: string }>;
+      version: number;
+    };
+    const de = JSON.parse(await readFile(dePath, 'utf8')) as {
+      entries: Record<string, Record<string, unknown>>;
+      locale: string;
+      version: number;
+    };
+
+    source.keys = {
+      'onboarding.navigation_title': {
+        placeholders: {},
+        text: 'Edit account',
+      },
+      'settings.navigation_title': {
+        placeholders: {},
+        text: 'Settings',
+      },
+      'settings.sync_now': {
+        placeholders: {},
+        text: 'Sync now',
+      },
+    };
+    de.entries = {
+      'onboarding.navigation_title': de.entries['onboarding.welcome.title']!,
+      'settings.navigation_title': de.entries['settings.privacy.title']!,
+      'settings.sync_now': de.entries['settings.privacy.title']!,
+    };
+    await writeJson(sourcePath, source);
+    await writeJson(dePath, de);
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const batches: string[][] = [];
+    const progress: string[] = [];
+    const report = await runLintFix(snapshot, {
+      batchSize: 2,
+      onProgress(update) {
+        progress.push(update.message);
+      },
+      provider: {
+        planKeyRenames: async (request) => {
+          batches.push(request.candidates.map((candidate) => candidate.key));
+          return {
+            modelVersion: 'test-model',
+            plans: request.candidates.map((candidate) => ({
+              from: candidate.key,
+              rationale: 'Split underscore titles into dotted segments.',
+              skip_reason: null,
+              to: candidate.key.replace(/_/g, '.'),
+            })),
+          };
+        },
+      },
+    });
+
+    expect(report.ok).toBe(true);
+    expect(batches).toEqual([
+      ['onboarding.navigation_title', 'settings.navigation_title'],
+      ['settings.sync_now'],
+    ]);
+    expect(progress).toEqual(
+      expect.arrayContaining([
+        'Codex is planning key renames (1/2, 2 keys)',
+        'Codex is planning key renames (2/2, 1 keys)',
+        'Applying 3 key renames',
+      ]),
+    );
+  });
 });

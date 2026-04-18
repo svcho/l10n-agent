@@ -19,6 +19,7 @@ import { readTextFile, writeTextFileAtomic } from '../utils/fs.js';
 import type { KeyRenameCandidate, KeyRenamePlan, TranslationProvider } from '../providers/base.js';
 
 const RENAMEABLE_LINT_CODES = new Set(['L10N_E0020', 'L10N_E0021', 'L10N_E0022', 'L10N_E0023']);
+const DEFAULT_LINT_FIX_BATCH_SIZE = 25;
 const NON_CODE_DIRECTORIES = new Set([
   '.git',
   '.next',
@@ -71,6 +72,14 @@ export interface LintReport {
   };
 }
 
+export interface LintFixProgress {
+  batch_candidates?: number;
+  batch_index?: number;
+  batch_total?: number;
+  message: string;
+  phase: 'applying' | 'planning' | 'rewriting';
+}
+
 interface TextFileRewrite {
   path: string;
   replacements: number;
@@ -105,6 +114,15 @@ function isRenameableDiagnostic(diagnostic: Diagnostic): boolean {
     typeof diagnostic.details?.key === 'string' &&
     diagnostic.details.key.length > 0
   );
+}
+
+function chunkItems<T>(items: T[], batchSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    chunks.push(items.slice(index, index + batchSize));
+  }
+
+  return chunks;
 }
 
 export function collectLintFixCandidates(snapshot: ProjectSnapshot, diagnostics?: Diagnostic[]): KeyRenameCandidate[] {
@@ -349,7 +367,9 @@ async function collectReferenceRewrites(
 export async function runLintFix(
   snapshot: ProjectSnapshot,
   options: {
+    batchSize?: number;
     glossary?: boolean;
+    onProgress?: (progress: LintFixProgress) => void;
     provider: {
       planKeyRenames: NonNullable<TranslationProvider['planKeyRenames']>;
     };
@@ -372,19 +392,37 @@ export async function runLintFix(
     };
   }
 
-  const providerResult = await options.provider.planKeyRenames({
+  const candidateBatches = chunkItems(
     candidates,
-    forbiddenPrefixes: snapshot.config.keys.forbidden_prefixes,
-    keyCase: snapshot.config.keys.case,
-    maxDepth: snapshot.config.keys.max_depth,
-    scopes: snapshot.config.keys.scopes,
-    sourceLocale: snapshot.config.source_locale,
-  });
-  const renames = providerResult.plans
+    Math.max(1, options.batchSize ?? DEFAULT_LINT_FIX_BATCH_SIZE),
+  );
+  const providerPlans: KeyRenamePlan[] = [];
+
+  for (const [batchIndex, batch] of candidateBatches.entries()) {
+    options.onProgress?.({
+      batch_candidates: batch.length,
+      batch_index: batchIndex + 1,
+      batch_total: candidateBatches.length,
+      message: `Codex is planning key renames (${batchIndex + 1}/${candidateBatches.length}, ${batch.length} keys)`,
+      phase: 'planning',
+    });
+
+    const providerResult = await options.provider.planKeyRenames({
+      candidates: batch,
+      forbiddenPrefixes: snapshot.config.keys.forbidden_prefixes,
+      keyCase: snapshot.config.keys.case,
+      maxDepth: snapshot.config.keys.max_depth,
+      scopes: snapshot.config.keys.scopes,
+      sourceLocale: snapshot.config.source_locale,
+    });
+    providerPlans.push(...providerResult.plans);
+  }
+
+  const renames = providerPlans
     .filter((plan): plan is { from: string; rationale?: string; to: string } => typeof plan.to === 'string')
     .sort((left, right) => left.from.localeCompare(right.from));
   const planningDiagnostics = [
-    ...createProviderPlanDiagnostics(candidates, providerResult.plans),
+    ...createProviderPlanDiagnostics(candidates, providerPlans),
     ...buildRenameDiagnostics(renames, snapshot),
   ].sort(compareDiagnostics);
 
@@ -415,7 +453,17 @@ export async function runLintFix(
     locale: translation.locale,
     path: translation.path,
   }));
+
+  options.onProgress?.({
+    message: `Applying ${renames.length} key rename${renames.length === 1 ? '' : 's'}`,
+    phase: 'applying',
+  });
   const referenceRewrites = await collectReferenceRewrites(snapshot, renames);
+
+  options.onProgress?.({
+    message: `Rewriting ${referenceRewrites.length} repo file${referenceRewrites.length === 1 ? '' : 's'} with key references`,
+    phase: 'rewriting',
+  });
 
   const timestamp = new Date().toISOString();
   const historyId = buildHistoryId(timestamp, 'lintfix');
