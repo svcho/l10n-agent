@@ -1,13 +1,23 @@
+import { readdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+import { resolveAndroidLocalePath } from '../adapters/android/strings.js';
 import { buildCanonicalKeySetFromSource, type ExtendedCanonicalKeySet } from '../adapters/canonical.js';
 import { L10nError } from '../errors/l10n-error.js';
 import type { TranslationProvider, TranslationRequest } from '../providers/base.js';
+import { readTextFile, writeTextFileAtomic } from '../utils/fs.js';
 import type { Diagnostic } from './diagnostics.js';
 import { hasErrorDiagnostics } from './diagnostics.js';
-import { buildHistoryId, createSyncHistoryEntry } from './history.js';
+import {
+  buildHistoryId,
+  createAddLocaleHistoryEntry,
+  createRemoveLocaleHistoryEntry,
+  createSyncHistoryEntry,
+} from './history.js';
 import { extractIcuPlaceholderNames } from './placeholders/icu.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
 import {
-  getManagedFilePaths,
+  getManagedFilePathsWithExtras,
   snapshotManagedFiles,
   writeProjectFiles,
   type TranslationLocaleState,
@@ -192,6 +202,53 @@ function buildTranslationRequest(
   };
 }
 
+async function discoverRemovedTranslationFiles(
+  snapshot: ProjectSnapshot,
+  selectedLocales: string[],
+): Promise<Array<{ locale: string; path: string }>> {
+  const configuredLocales = new Set(selectedLocales);
+  const entries = await readdir(snapshot.l10nDir, { withFileTypes: true }).catch(() => []);
+
+  return entries
+    .filter((entry) => entry.isFile())
+    .flatMap((entry) => {
+      const match = /^translations\.([a-z]{2}(?:-[A-Z]{2})?)\.json$/u.exec(entry.name);
+      if (!match || !match[1]) {
+        return [];
+      }
+
+      const locale = match[1];
+      if (configuredLocales.has(locale)) {
+        return [];
+      }
+
+      return [
+        {
+          locale,
+          path: resolve(snapshot.l10nDir, entry.name),
+        },
+      ];
+    })
+    .sort((left, right) => left.locale.localeCompare(right.locale));
+}
+
+function buildArchivePath(l10nDir: string, locale: string, timestamp: string): string {
+  const safeTimestamp = timestamp.replaceAll(/[-:.TZ]/g, '').slice(0, 14);
+  return resolve(l10nDir, '.archive', `translations.${locale}.${safeTimestamp}.json`);
+}
+
+async function archiveRemovedTranslations(
+  l10nDir: string,
+  removedTranslations: Array<{ locale: string; path: string }>,
+  timestamp: string,
+): Promise<void> {
+  for (const translation of removedTranslations) {
+    const rawText = await readTextFile(translation.path);
+    await writeTextFileAtomic(buildArchivePath(l10nDir, translation.locale, timestamp), rawText);
+    await removeFileIfExists(translation.path);
+  }
+}
+
 export function buildSyncPlan(
   snapshot: ProjectSnapshot,
   options: Pick<SyncOptions, 'locales'> = {},
@@ -348,6 +405,11 @@ export async function runSync(
 ): Promise<SyncReport> {
   const diagnostics = lintSourceKeys(snapshot.config, snapshot.source.value);
   const selectedLocales = getSelectedLocales(snapshot, options.locales);
+  const removedTranslationFiles = await discoverRemovedTranslationFiles(snapshot, selectedLocales);
+  const addedLocales = snapshot.translations
+    .filter((translation) => selectedLocales.includes(translation.locale) && !translation.exists)
+    .map((translation) => translation.locale)
+    .sort();
   const plan = buildSyncPlan(snapshot, { locales: selectedLocales });
   const resumedFrom =
     snapshot.state.exists && snapshot.state.value && plan.total_pending_tasks > 0
@@ -446,7 +508,19 @@ export async function runSync(
   const historyEntries = [...(snapshot.history.value ?? [])];
   const historyTimestamp = new Date().toISOString();
   const historyId = buildHistoryId(historyTimestamp, 'sync');
-  await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
+  await snapshotManagedFiles(
+    snapshot.rootDir,
+    snapshot.l10nDir,
+    historyId,
+    getManagedFilePathsWithExtras(snapshot, [
+      ...removedTranslationFiles.map((translation) => translation.path),
+      ...removedTranslationFiles.flatMap((translation) =>
+        snapshot.platformPaths.android
+          ? [resolveAndroidLocalePath(snapshot.platformPaths.android, snapshot.config.source_locale, translation.locale)]
+          : [],
+      ),
+    ]),
+  );
 
   for (const localePlan of plan.locales) {
     const localeState = localeStates.get(localePlan.locale);
@@ -596,10 +670,22 @@ export async function runSync(
   await writeProjectFiles(snapshot, snapshot.source.value, [...localeStates.values()], {
     cacheEntries,
     removeState: true,
+    removedLocales: removedTranslationFiles.map((translation) => translation.locale),
   });
+  await archiveRemovedTranslations(snapshot.l10nDir, removedTranslationFiles, historyTimestamp);
 
   const timestamp = new Date().toISOString();
   await appendHistoryEntries(snapshot.history.path, historyEntries, [
+    ...addedLocales.map((locale) =>
+      createAddLocaleHistoryEntry(buildHistoryId(timestamp, `add-locale-${locale}`), timestamp, locale),
+    ),
+    ...removedTranslationFiles.map((translation) =>
+      createRemoveLocaleHistoryEntry(
+        buildHistoryId(timestamp, `remove-locale-${translation.locale}`),
+        timestamp,
+        translation.locale,
+      ),
+    ),
     createSyncHistoryEntry(
       historyId,
       timestamp,

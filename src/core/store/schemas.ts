@@ -111,6 +111,13 @@ export const HistoryEntrySchema = z.discriminatedUnion('op', [
   z.object({
     actor: z.string(),
     id: z.string(),
+    op: z.literal('repair'),
+    summary: z.string(),
+    ts: z.string().datetime(),
+  }),
+  z.object({
+    actor: z.string(),
+    id: z.string(),
     op: z.literal('rollback'),
     to: z.string(),
     ts: z.string().datetime(),

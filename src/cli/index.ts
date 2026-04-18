@@ -8,9 +8,11 @@ import { buildCheckReport } from '../core/check.js';
 import { buildDedupeReport } from '../core/dedupe.js';
 import type { Diagnostic } from '../core/diagnostics.js';
 import { buildDoctorReport } from '../core/doctor.js';
+import { lintGlossary } from '../core/glossary.js';
 import { runImport } from '../core/import.js';
 import { runInit } from '../core/init.js';
 import { lintSourceKeys } from '../core/linter/lint-keys.js';
+import { runRepair } from '../core/repair.js';
 import { runRename } from '../core/rename.js';
 import { runRollback } from '../core/rollback.js';
 import { loadProjectSnapshot } from '../core/store/load.js';
@@ -160,10 +162,15 @@ program
 program
   .command('lint')
   .description('Validate canonical key names and source-level constraints.')
+  .option('--glossary', 'validate persisted translations against configured glossary terms', false)
   .action(async function lintAction(this: Command) {
     await runAction(this, async (options) => {
       const snapshot = await loadProjectSnapshot(options.cwd, options.config);
-      const diagnostics = lintSourceKeys(snapshot.config, snapshot.source.value);
+      const commandOptions = this.opts<{ glossary: boolean }>();
+      const diagnostics = [
+        ...lintSourceKeys(snapshot.config, snapshot.source.value),
+        ...(commandOptions.glossary ? lintGlossary(snapshot) : []),
+      ];
       const report = {
         diagnostics,
         ok: diagnostics.length === 0,
@@ -192,11 +199,27 @@ program
 
 program
   .command('dedupe')
-  .description('Flag exact duplicate source copy across canonical keys.')
+  .description('Flag exact and semantic duplicate source copy across canonical keys.')
   .action(async function dedupeAction(this: Command) {
     await runAction(this, async (options) => {
       const snapshot = await loadProjectSnapshot(options.cwd, options.config);
-      const report = buildDedupeReport(snapshot);
+      const provider = createProvider(
+        options,
+        snapshot.config.provider.codex_min_version,
+        snapshot.config.provider.model,
+      );
+      const preflight = await provider.preflight();
+      if (!preflight.ok) {
+        throw new L10nError({
+          code: preflight.code ?? 'L10N_E0054',
+          details: preflight.detectedVersion ? { detected_version: preflight.detectedVersion } : {},
+          level: 'error',
+          next: preflight.message ?? 'Re-run the command after fixing the provider environment.',
+          summary: 'Provider preflight failed',
+        });
+      }
+
+      const report = await buildDedupeReport(snapshot, provider);
       printDedupeReport(report, options);
       return report.ok ? 0 : 1;
     });
@@ -266,6 +289,18 @@ program
       const snapshot = await loadProjectSnapshot(options.cwd, options.config);
       const report = await runImport(snapshot, commandOptions);
       printImportReport(report, options);
+      return report.ok ? 0 : 1;
+    });
+  });
+
+program
+  .command('repair')
+  .description('Re-canonicalize managed JSON files and auto-resolve simple merge artifacts.')
+  .option('--dry-run', 'compute the repair result without writing files', false)
+  .action(async function repairAction(this: Command) {
+    await runAction(this, async (options) => {
+      const report = await runRepair(options.cwd, options.config, this.opts<{ dryRun: boolean }>());
+      printDiagnosticsReport(report, options);
       return report.ok ? 0 : 1;
     });
   });

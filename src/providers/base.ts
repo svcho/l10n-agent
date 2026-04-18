@@ -9,6 +9,24 @@ export interface TranslationRequest {
   targetLocale: string;
 }
 
+export interface SemanticDedupeCandidate {
+  description?: string;
+  key: string;
+  text: string;
+}
+
+export interface SemanticDedupeGroup {
+  canonicalKey: string;
+  confidence: number;
+  duplicateKeys: string[];
+  rationale: string;
+}
+
+export interface SemanticDedupeRequest {
+  candidates: SemanticDedupeCandidate[];
+  sourceLocale: string;
+}
+
 export interface TranslationResult {
   modelVersion: string;
   text: string;
@@ -27,6 +45,9 @@ export interface TranslationProvider {
   estimateRequests?(
     inputs: TranslationRequest[],
   ): Promise<{ notes?: string; requests: number }>;
+  findSemanticDuplicates?(
+    input: SemanticDedupeRequest,
+  ): Promise<{ groups: SemanticDedupeGroup[]; modelVersion: string }>;
   preflight?(): Promise<PreflightResult>;
   translate(input: TranslationRequest): Promise<TranslationResult>;
 }

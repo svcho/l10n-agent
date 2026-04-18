@@ -40,15 +40,72 @@ describe('Milestone 5 flows', () => {
     await writeJson(sourcePath, source);
 
     const snapshot = await loadProjectSnapshot(projectDir);
-    const report = buildDedupeReport(snapshot);
+    const report = await buildDedupeReport(snapshot);
 
-    expect(report.summary.duplicate_groups).toBe(1);
+    expect(report.summary.exact_duplicate_groups).toBe(1);
     expect(report.exact_duplicates).toEqual([
       {
         keys: ['settings.privacy.label', 'settings.privacy.title'],
         text: 'Privacy',
       },
     ]);
+  });
+
+  it('flags semantic duplicate candidates from the provider without repeating exact matches', async () => {
+    const projectDir = await createTempProject('semantic-dedupe');
+    const sourcePath = join(projectDir, 'l10n/source.en.json');
+    const source = JSON.parse(await readFile(sourcePath, 'utf8')) as {
+      keys: Record<string, { text: string; description?: string; placeholders: Record<string, unknown> }>;
+      version: number;
+    };
+
+    source.keys['button.save_item.title'] = {
+      description: 'Save button for a single item detail screen.',
+      placeholders: {},
+      text: 'Save item',
+    };
+    source.keys['cta.save.label'] = {
+      description: 'Primary save action.',
+      placeholders: {},
+      text: 'Save',
+    };
+    await writeJson(sourcePath, source);
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await buildDedupeReport(snapshot, {
+      findSemanticDuplicates: async () => ({
+        groups: [
+          {
+            canonicalKey: 'missing.key',
+            confidence: 0.95,
+            duplicateKeys: ['settings.privacy.title'],
+            rationale: 'bad result that should be ignored by consumers only if invalid keys existed',
+          },
+          {
+            canonicalKey: 'cta.save.label',
+            confidence: 0.78,
+            duplicateKeys: ['button.save_item.title'],
+            rationale: 'Both keys describe a primary save-style action label.',
+          },
+        ],
+        modelVersion: 'codex-cli-test',
+      }),
+      id: 'test-provider',
+      translate: async () => {
+        throw new Error('not used');
+      },
+    });
+
+    expect(report.semantic_duplicates).toEqual([
+      {
+        canonical_key: 'cta.save.label',
+        confidence: 0.78,
+        duplicate_keys: ['button.save_item.title'],
+        model_version: 'codex-cli-test',
+        rationale: 'Both keys describe a primary save-style action label.',
+      },
+    ]);
+    expect(report.summary.semantic_duplicate_groups).toBe(1);
   });
 
   it('renames a canonical key across source, translations, platforms, and history', async () => {

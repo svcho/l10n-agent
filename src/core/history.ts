@@ -75,3 +75,33 @@ export function createRollbackHistoryEntry(id: string, timestamp: string, to: st
     ts: timestamp,
   };
 }
+
+export function createAddLocaleHistoryEntry(id: string, timestamp: string, locale: string): HistoryEntry {
+  return {
+    actor: getActor(),
+    id,
+    locale,
+    op: 'add_locale',
+    ts: timestamp,
+  };
+}
+
+export function createRemoveLocaleHistoryEntry(id: string, timestamp: string, locale: string): HistoryEntry {
+  return {
+    actor: getActor(),
+    id,
+    locale,
+    op: 'remove_locale',
+    ts: timestamp,
+  };
+}
+
+export function createRepairHistoryEntry(id: string, timestamp: string, summary: string): HistoryEntry {
+  return {
+    actor: getActor(),
+    id,
+    op: 'repair',
+    summary,
+    ts: timestamp,
+  };
+}

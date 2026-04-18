@@ -1,5 +1,179 @@
 # AGENTS.md
 
+## Purpose
+
+`l10n-agent` is a local-first CLI for native iOS and Android localization workflows. It keeps a canonical JSON source of truth under `l10n/`, syncs native platform files, uses local Codex CLI for translation and semantic dedupe, and keeps deterministic repo state in git-friendly files.
+
+This file is intended to preserve the important maintainer context that would otherwise live only in a product doc.
+
+## Product boundaries
+
+### In scope
+
+- local CLI-first workflows
+- canonical source file at `l10n/source.<locale>.json`
+- derived per-locale translation files at `l10n/translations.<locale>.json`
+- iOS `.xcstrings`
+- Android `strings.xml`
+- local Codex CLI as the only provider-backed path
+- deterministic repo checks and offline tests
+
+### Out of scope for v1
+
+- hosted services or remote state
+- OTA/runtime translation delivery
+- web UI or translator portal
+- enterprise collaboration features
+- non-mobile platforms
+- plural resource authoring and plural ICU syntax support
+
+## Core workflow model
+
+The intended ownership model is:
+
+1. Humans edit canonical source in `l10n/source.<locale>.json`.
+2. `sync` derives translations and native platform files from canonical state.
+3. App code references localization keys rather than human-readable copy literals.
+4. Humans may review and lock translations by setting `reviewed: true`.
+
+Native files are derived outputs. They should not become the long-term source of truth after adoption.
+
+## Supported commands
+
+- `init`
+- `sync`
+- `lint`
+- `check`
+- `doctor`
+- `dedupe`
+- `rename`
+- `rollback`
+- `import`
+- `repair`
+
+## Important behavioral rules
+
+- canonical source lives under `l10n/source.<locale>.json`
+- translation files live under `l10n/translations.<locale>.json`
+- all persisted JSON is versioned and stable-sorted
+- removed locales must be archived under `l10n/.archive/`
+- history is append-only in `l10n/.history.jsonl`
+- rollback depends on snapshots in `l10n/.snapshots/`
+- tests must stay offline; no live Codex calls in CI
+- provider-backed behavior must stay isolated to `src/providers/`
+- reviewed translations must never be silently overwritten
+- placeholder parity must be preserved across translations
+- semantic dedupe may propose merges but must never auto-merge keys
+
+## Provider model
+
+`l10n-agent` uses local Codex CLI only.
+
+Provider-backed commands:
+
+- `sync`
+- `dedupe`
+- `doctor` request estimation when Codex is available
+
+Preflight must continue to validate:
+
+- Codex installed
+- Codex logged in
+- Codex version meets configured minimum
+
+Failure codes currently matter as product behavior:
+
+- `L10N_E0050` not installed
+- `L10N_E0051` not logged in
+- `L10N_E0052` version too old
+- `L10N_E0053` rate limit or quota
+- `L10N_E0054` subprocess failure
+- `L10N_E0055` malformed provider protocol/output
+
+## Data model summary
+
+Important managed files:
+
+- `l10n/config.yaml`
+- `l10n/source.<locale>.json`
+- `l10n/translations.<locale>.json`
+- `l10n/.cache.json`
+- `l10n/.history.jsonl`
+- `l10n/.state.json`
+- `l10n/.archive/`
+- `l10n/.snapshots/`
+
+Important translation entry semantics:
+
+- `reviewed`
+  Human-reviewed; `sync` must not silently replace it.
+- `stale`
+  Source changed after translation was produced or reviewed.
+- `source_hash`
+  Current source-copy fingerprint used for drift detection.
+
+## Important paths
+
+- `src/cli/`
+  command wiring and human/json output
+- `src/config/`
+  config schema and loader
+- `src/core/store/`
+  canonical JSON schemas, hashing, load, and write helpers
+- `src/core/sync.ts`
+  canonical reconciliation, cache/state/history, locale add/remove handling
+- `src/core/dedupe.ts`
+  exact and semantic duplicate reporting
+- `src/core/glossary.ts`
+  glossary enforcement over persisted translations
+- `src/core/repair.ts`
+  canonical JSON normalization and merge-artifact repair
+- `src/core/rename.ts`
+  transactional key renaming across managed state
+- `src/core/rollback.ts`
+  history-based restoration
+- `src/providers/codex-local.ts`
+  Codex preflight, structured prompts, and replay transport
+- `src/adapters/ios/`
+  `.xcstrings` adapter
+- `src/adapters/android/`
+  `strings.xml` adapter
+- `fixtures/projects/`
+  integration fixtures
+- `fixtures/provider/`
+  recorded provider sessions for offline tests
+
+## Onboarding scenarios the docs must keep covering
+
+The public docs need to stay complete enough that `PRD.md` can be removed without losing onboarding knowledge.
+
+They must continue to explain:
+
+- how to adopt the tool in a repo that already has iOS and/or Android localization files
+- how to adopt the tool in a repo that has not localized anything yet
+- how to create the first native localization containers for greenfield adoption
+- how to replace hard-coded strings in app code with localizable key lookups
+- how canonical dotted keys map to Android snake_case resource names by default
+
+## Migration expectations
+
+For partially localized or unlocalized apps, the intended migration order is:
+
+1. create or detect native localization files
+2. run `init`
+3. establish canonical keys in `source.<locale>.json`
+4. run `sync`
+5. replace code literals with localization lookups
+6. use `rename` and `dedupe` to improve key quality rather than editing many files manually
+
+## Release readiness and docs policy
+
+- `README.md` and `AGENTS.md` should be sufficient project context if `PRD.md` is deleted
+- public docs must describe the actual implemented command surface, not milestone placeholders
+- if behavior changes, update docs and integration tests in the same change
+- keep repo publish-safe: never commit credentials, `.env*`, private keys, auth dumps, or sensitive recorded model output
+- pre-commit runs `npm run secrets:scan`; keep it passing
+
 ## Fast start
 
 ```bash
@@ -8,27 +182,3 @@ npm run build
 npm test
 npm run repo:public-check
 ```
-
-## Current scope
-
-- M1 only: deterministic foundation
-- implemented commands should stay local-only and deterministic: `lint`, `check`, `doctor`
-- do not add live translation calls or platform write logic unless the task explicitly moves into later milestones
-
-## Important paths
-
-- `src/cli/` command entrypoints and output formatting
-- `src/config/schema.ts` repo config schema and loader
-- `src/core/store/` canonical JSON store schemas and loaders
-- `src/core/linter/` key-style rules and reporting
-- `src/providers/codex-local.ts` Codex preflight only for now
-- `fixtures/projects/` integration fixtures for `check` and `doctor`
-
-## Working rules
-
-- canonical source lives under `l10n/source.<locale>.json`
-- translation files live under `l10n/translations.<locale>.json`
-- all persisted JSON is versioned and stable-sorted
-- tests must stay offline; no live Codex calls in CI
-- keep repo publish-safe: never commit credentials, `.env*`, private keys, or auth dumps
-- pre-commit runs `npm run secrets:scan`; keep it passing

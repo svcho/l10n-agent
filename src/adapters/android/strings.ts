@@ -1,4 +1,4 @@
-import { access, constants, readdir } from 'node:fs/promises';
+import { access, constants, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import type { KeyTransform } from '../../config/schema.js';
@@ -90,7 +90,7 @@ function androidDirectoryToLocale(directory: string): string | null {
   return region ? `${language}-${region}` : language;
 }
 
-function resolveLocalePath(basePath: string, sourceLocale: string, locale: string): string {
+export function resolveAndroidLocalePath(basePath: string, sourceLocale: string, locale: string): string {
   if (locale === sourceLocale) {
     return basePath;
   }
@@ -519,7 +519,7 @@ export class AndroidStringsAdapter implements Adapter {
     keyCount: number;
     locales: string[];
   }> {
-    const sourceFilePath = resolveLocalePath(path, this.options.sourceLocale, this.options.sourceLocale);
+    const sourceFilePath = resolveAndroidLocalePath(path, this.options.sourceLocale, this.options.sourceLocale);
     const sourceKeys = await this.read(sourceFilePath, this.options.sourceLocale);
     const resDir = dirname(dirname(path));
     const baseName = basename(path);
@@ -560,7 +560,7 @@ export class AndroidStringsAdapter implements Adapter {
 
   async readWithComments(path: string, locale?: string): Promise<ExtendedCanonicalKeySet> {
     const targetLocale = locale ?? this.options.sourceLocale;
-    const targetPath = resolveLocalePath(path, this.options.sourceLocale, targetLocale);
+    const targetPath = resolveAndroidLocalePath(path, this.options.sourceLocale, targetLocale);
 
     if (!(await fileExists(targetPath))) {
       return { keys: new Map() };
@@ -605,7 +605,17 @@ export class AndroidStringsAdapter implements Adapter {
   }
 
   async write(path: string, keys: CanonicalKeySet, locale: string): Promise<void> {
-    const targetPath = resolveLocalePath(path, this.options.sourceLocale, locale);
+    const targetPath = resolveAndroidLocalePath(path, this.options.sourceLocale, locale);
+    if (locale !== this.options.sourceLocale && keys.keys.size === 0) {
+      try {
+        await rm(targetPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+      return;
+    }
     const renderedEntries = [...keys.keys.entries()]
       .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
       .map(([canonicalKey, keyValue]) => {

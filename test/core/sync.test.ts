@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { AndroidStringsAdapter } from '../../src/adapters/android/strings.js';
 import { IosXcstringsAdapter } from '../../src/adapters/ios/xcstrings.js';
+import { buildCanonicalKeySetFromTranslation } from '../../src/adapters/canonical.js';
 import { buildCheckReport } from '../../src/core/check.js';
 import { loadProjectSnapshot } from '../../src/core/store/load.js';
 import { runSync } from '../../src/core/sync.js';
@@ -203,5 +204,96 @@ describe('runSync', () => {
       ]?.text,
     ).toBe('Hola, {name}');
     expect(refreshed.state.exists).toBe(false);
+  });
+
+  it('archives removed locales and strips them from platform files during sync', async () => {
+    const projectDir = await createTempProject('sync-remove-locale');
+    const configPath = join(projectDir, 'l10n/config.yaml');
+    const configWithFr = (await readFile(configPath, 'utf8')).replace('  - es\n', '  - es\n  - fr\n');
+    await writeFile(configPath, configWithFr, 'utf8');
+
+    const frTranslationPath = join(projectDir, 'l10n/translations.fr.json');
+    await writeFile(
+      frTranslationPath,
+      JSON.stringify(
+        {
+          entries: {
+            'onboarding.welcome.title': {
+              model_version: 'manual',
+              provider: 'human',
+              reviewed: true,
+              source_hash: 'sha256:ae7593171bfe263eb9f504282b37fe29fa76e638ac6e604f1cc6585eff49d9b6',
+              stale: false,
+              text: 'Bienvenue chez vous, {name}',
+              translated_at: '2026-04-18T12:07:00Z',
+            },
+            'settings.privacy.title': {
+              model_version: 'manual',
+              provider: 'human',
+              reviewed: true,
+              source_hash: 'sha256:9c432d31bfec7bccb6b1c0682109da54c2b0d107434f68c2ebb15a7cb08baee0',
+              stale: false,
+              text: 'Confidentialite',
+              translated_at: '2026-04-18T12:07:00Z',
+            },
+          },
+          locale: 'fr',
+          version: 1,
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    const withFrSnapshot = await loadProjectSnapshot(projectDir);
+    const frTranslation = withFrSnapshot.translations.find((translation) => translation.locale === 'fr')?.value;
+    expect(frTranslation).toBeTruthy();
+
+    const iosAdapter = new IosXcstringsAdapter({
+      keyTransform: 'identity',
+      sourceLocale: 'en',
+    });
+    const androidAdapter = new AndroidStringsAdapter({
+      keyTransform: 'snake_case',
+      sourceLocale: 'en',
+    });
+    await iosAdapter.write(
+      join(projectDir, 'ios/MyApp/Localizable.xcstrings'),
+      buildCanonicalKeySetFromTranslation(frTranslation!, withFrSnapshot.source.value),
+      'fr',
+    );
+    await androidAdapter.write(
+      join(projectDir, 'android/app/src/main/res/values/strings.xml'),
+      buildCanonicalKeySetFromTranslation(frTranslation!, withFrSnapshot.source.value),
+      'fr',
+    );
+
+    const configWithoutFr = (await readFile(configPath, 'utf8')).replace('  - fr\n', '');
+    await writeFile(configPath, configWithoutFr, 'utf8');
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runSync(snapshot, {
+      provider: await createReplayProvider(projectDir, 'sync-success.json'),
+    });
+
+    expect(report.ok).toBe(true);
+
+    const refreshed = await loadProjectSnapshot(projectDir);
+    expect(refreshed.translations.find((translation) => translation.locale === 'fr')).toBeUndefined();
+    await expect(readFile(frTranslationPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const archiveDir = join(projectDir, 'l10n/.archive');
+    const archiveEntries = (await readdir(archiveDir)).filter((entry) => entry.startsWith('translations.fr.'));
+    expect(archiveEntries).toHaveLength(1);
+
+    const iosFrench = await iosAdapter.read(join(projectDir, 'ios/MyApp/Localizable.xcstrings'), 'fr');
+    expect(iosFrench.keys.size).toBe(0);
+
+    const androidFrenchPath = join(projectDir, 'android/app/src/main/res/values-fr/strings.xml');
+    await expect(readFile(androidFrenchPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(refreshed.history.value?.some((entry) => entry.op === 'remove_locale' && entry.locale === 'fr')).toBe(
+      true,
+    );
   });
 });

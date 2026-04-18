@@ -151,7 +151,31 @@ export function printSyncReport(report: SyncReport, options: OutputOptions): voi
 }
 
 export function printDedupeReport(report: DedupeReport, options: OutputOptions): void {
-  printDiagnosticsReport(report, options);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  const colors = createChalk(options.color);
+  for (const group of report.exact_duplicates) {
+    process.stdout.write(
+      `${colors.yellow('warn')}  L10N_E0070  exact duplicate: ${group.keys.join(', ')}\n`,
+    );
+    process.stdout.write(`       text: ${group.text}\n`);
+  }
+
+  for (const group of report.semantic_duplicates) {
+    process.stdout.write(
+      `${colors.yellow('warn')}  L10N_E0071  semantic duplicate: ${group.canonical_key} <- ${group.duplicate_keys.join(', ')}\n`,
+    );
+    process.stdout.write(`       confidence: ${group.confidence.toFixed(2)}\n`);
+    process.stdout.write(`       model: ${group.model_version}\n`);
+    process.stdout.write(`       rationale: ${group.rationale}\n`);
+  }
+
+  process.stdout.write(
+    `\nok  ${JSON.stringify(report.summary)}\n`,
+  );
 }
 
 export function printRenameReport(report: RenameReport, options: OutputOptions): void {

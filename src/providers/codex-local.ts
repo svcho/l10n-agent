@@ -8,6 +8,8 @@ import { L10nError } from '../errors/l10n-error.js';
 import { writeTextFileAtomic } from '../utils/fs.js';
 import type {
   PreflightResult,
+  SemanticDedupeGroup,
+  SemanticDedupeRequest,
   TranslationProvider,
   TranslationRequest,
   TranslationResult,
@@ -27,7 +29,7 @@ export interface CodexExecRequest {
   model?: string;
   outputSchemaPath: string;
   prompt: string;
-  request: TranslationRequest;
+  request?: TranslationRequest;
 }
 
 export interface CodexExecResponse {
@@ -107,6 +109,29 @@ function buildPrompt(request: TranslationRequest): string {
   sections.push(`Source text:\n${request.sourceText}`);
 
   return sections.join('\n\n');
+}
+
+function buildSemanticDedupePrompt(request: SemanticDedupeRequest): string {
+  const lines = [
+    'Review canonical localization keys and find groups that likely represent the same user-facing concept.',
+    'Return JSON only.',
+    'Use a group only when merging would plausibly remove redundant translation work.',
+    'Do not group generic structural similarities, opposites, or strings that merely share one word.',
+    'Prefer conservative results.',
+    'Choose one existing key as canonical_key and list the others in duplicate_keys.',
+    'Never include the same key twice or include the canonical key inside duplicate_keys.',
+    `Source locale: ${request.sourceLocale}`,
+    'Candidates:',
+    ...request.candidates.map((candidate) =>
+      [
+        `- key: ${candidate.key}`,
+        `  text: ${candidate.text}`,
+        ...(candidate.description ? [`  description: ${candidate.description}`] : []),
+      ].join('\n'),
+    ),
+  ];
+
+  return lines.join('\n');
 }
 
 function classifyCodexFailure(stderr: string, stdout: string): L10nError {
@@ -283,16 +308,21 @@ export class ReplayCodexExecTransport implements CodexExecTransport {
   }
 
   async run(request: CodexExecRequest): Promise<CodexExecResponse> {
+    if (!request.request) {
+      throw new Error('Replay transport only supports translation fixtures');
+    }
+
+    const translationRequest = request.request;
     const match = this.fixtures.find(
       (fixture) =>
-        fixture.request.sourceLocale === request.request.sourceLocale &&
-        fixture.request.targetLocale === request.request.targetLocale &&
-        fixture.request.sourceText === request.request.sourceText,
+        fixture.request.sourceLocale === translationRequest.sourceLocale &&
+        fixture.request.targetLocale === translationRequest.targetLocale &&
+        fixture.request.sourceText === translationRequest.sourceText,
     );
 
     if (!match) {
       throw new Error(
-        `No recorded Codex fixture for ${request.request.sourceLocale}->${request.request.targetLocale}: ${request.request.sourceText}`,
+        `No recorded Codex fixture for ${translationRequest.sourceLocale}->${translationRequest.targetLocale}: ${translationRequest.sourceText}`,
       );
     }
 
@@ -365,31 +395,142 @@ export class CodexLocalProvider implements TranslationProvider {
   }
 
   async translate(input: TranslationRequest): Promise<TranslationResult> {
+    const parsed = await this.runStructuredPrompt<{ text: string }>(
+      'translation-output.schema.json',
+      {
+        additionalProperties: false,
+        properties: {
+          text: { type: 'string' },
+        },
+        required: ['text'],
+        type: 'object',
+      },
+      buildPrompt(input),
+      input,
+    );
+
+    if (typeof parsed.text !== 'string') {
+      throw new L10nError({
+        code: 'L10N_E0055',
+        details: {},
+        level: 'error',
+        next: 'Upgrade Codex CLI or re-record the provider fixture if the protocol changed.',
+        summary: 'Codex returned an unexpected translation payload',
+      });
+    }
+
+    return {
+      modelVersion: this.getModelVersion(),
+      text: parsed.text,
+    };
+  }
+
+  async findSemanticDuplicates(
+    input: SemanticDedupeRequest,
+  ): Promise<{ groups: SemanticDedupeGroup[]; modelVersion: string }> {
+    const parsed = await this.runStructuredPrompt<{ groups: Array<{
+      canonical_key: string;
+      confidence: number;
+      duplicate_keys: string[];
+      rationale: string;
+    }> }>(
+      'semantic-dedupe-output.schema.json',
+      {
+        additionalProperties: false,
+        properties: {
+          groups: {
+            items: {
+              additionalProperties: false,
+              properties: {
+                canonical_key: { type: 'string' },
+                confidence: { maximum: 1, minimum: 0, type: 'number' },
+                duplicate_keys: {
+                  items: { type: 'string' },
+                  type: 'array',
+                },
+                rationale: { type: 'string' },
+              },
+              required: ['canonical_key', 'confidence', 'duplicate_keys', 'rationale'],
+              type: 'object',
+            },
+            type: 'array',
+          },
+        },
+        required: ['groups'],
+        type: 'object',
+      },
+      buildSemanticDedupePrompt(input),
+      undefined,
+    );
+
+    const knownKeys = new Set(input.candidates.map((candidate) => candidate.key));
+    const groups: SemanticDedupeGroup[] = [];
+
+    for (const group of parsed.groups ?? []) {
+      if (
+        !group ||
+        typeof group !== 'object' ||
+        typeof group.canonical_key !== 'string' ||
+        !Array.isArray(group.duplicate_keys) ||
+        typeof group.rationale !== 'string' ||
+        typeof group.confidence !== 'number'
+      ) {
+        continue;
+      }
+
+      if (!knownKeys.has(group.canonical_key)) {
+        continue;
+      }
+
+      const duplicateKeys = [...new Set(group.duplicate_keys)]
+        .filter((key): key is string => typeof key === 'string')
+        .filter((key) => key !== group.canonical_key && knownKeys.has(key))
+        .sort();
+
+      if (duplicateKeys.length === 0) {
+        continue;
+      }
+
+      groups.push({
+        canonicalKey: group.canonical_key,
+        confidence: Math.max(0, Math.min(1, group.confidence)),
+        duplicateKeys,
+        rationale: group.rationale.trim(),
+      });
+    }
+
+    return {
+      groups,
+      modelVersion: this.getModelVersion(),
+    };
+  }
+
+  private getModelVersion(): string {
+    return (
+      this.options.model ??
+      (this.latestPreflight?.detectedVersion
+        ? `codex-cli-${this.latestPreflight.detectedVersion}`
+        : 'codex-cli')
+    );
+  }
+
+  private async runStructuredPrompt<T>(
+    schemaFileName: string,
+    schema: unknown,
+    prompt: string,
+    request?: TranslationRequest,
+  ): Promise<T> {
     const schemaDir = await mkdtemp(join(tmpdir(), 'l10n-agent-codex-'));
-    const schemaPath = join(schemaDir, 'translation-output.schema.json');
+    const schemaPath = join(schemaDir, schemaFileName);
 
     try {
-      await writeTextFileAtomic(
-        schemaPath,
-        `${JSON.stringify(
-          {
-            additionalProperties: false,
-            properties: {
-              text: { type: 'string' },
-            },
-            required: ['text'],
-            type: 'object',
-          },
-          null,
-          2,
-        )}\n`,
-      );
+      await writeTextFileAtomic(schemaPath, `${JSON.stringify(schema, null, 2)}\n`);
 
       const response = await (this.options.transport ?? new SpawnCodexExecTransport()).run({
         cwd: this.options.cwd,
         outputSchemaPath: schemaPath,
-        prompt: buildPrompt(input),
-        request: input,
+        prompt,
+        ...(request ? { request } : {}),
         ...(this.options.model ? { model: this.options.model } : {}),
       });
 
@@ -412,30 +553,7 @@ export class CodexLocalProvider implements TranslationProvider {
         });
       }
 
-      if (
-        !parsed ||
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed) ||
-        !('text' in parsed) ||
-        typeof parsed.text !== 'string'
-      ) {
-        throw new L10nError({
-          code: 'L10N_E0055',
-          details: {},
-          level: 'error',
-          next: 'Upgrade Codex CLI or re-record the provider fixture if the protocol changed.',
-          summary: 'Codex returned an unexpected translation payload',
-        });
-      }
-
-      return {
-        modelVersion:
-          this.options.model ??
-          (this.latestPreflight?.detectedVersion
-            ? `codex-cli-${this.latestPreflight.detectedVersion}`
-            : 'codex-cli'),
-        text: parsed.text,
-      };
+      return parsed as T;
     } catch (error) {
       if (error instanceof L10nError) {
         throw error;

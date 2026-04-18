@@ -49,6 +49,10 @@ export function getManagedFilePaths(snapshot: ProjectSnapshot): string[] {
   return [...filePaths].sort();
 }
 
+export function getManagedFilePathsWithExtras(snapshot: ProjectSnapshot, extraPaths: string[] = []): string[] {
+  return [...new Set([...getManagedFilePaths(snapshot), ...extraPaths])].sort();
+}
+
 export async function snapshotManagedFiles(
   rootDir: string,
   l10nDir: string,
@@ -151,6 +155,7 @@ export async function writeProjectFiles(
   options: {
     cacheEntries?: CacheFile['entries'];
     removeState?: boolean;
+    removedLocales?: string[];
   } = {},
 ): Promise<void> {
   await writeSourceFile(snapshot.source.path, source);
@@ -189,6 +194,10 @@ export async function writeProjectFiles(
         translation.locale,
       );
     }
+
+    for (const locale of [...new Set(options.removedLocales ?? [])].sort()) {
+      await adapter.write(snapshot.platformPaths.ios, { keys: new Map() }, locale);
+    }
   }
 
   if (snapshot.platformPaths.android && snapshot.config.platforms.android) {
@@ -216,6 +225,10 @@ export async function writeProjectFiles(
         ),
         translation.locale,
       );
+    }
+
+    for (const locale of [...new Set(options.removedLocales ?? [])].sort()) {
+      await adapter.write(snapshot.platformPaths.android, { keys: new Map() }, locale);
     }
   }
 
