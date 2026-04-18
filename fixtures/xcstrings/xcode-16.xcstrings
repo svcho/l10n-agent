@@ -1,0 +1,93 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "events.starts_at": {
+      "comment": "Event start time label.",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beginnt um %1$@"
+          },
+          "substitutions": {
+            "date": {
+              "argNum": 1,
+              "formatSpecifier": "date"
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starts at %1$@"
+          },
+          "substitutions": {
+            "date": {
+              "argNum": 1,
+              "formatSpecifier": "date"
+            }
+          }
+        }
+      }
+    },
+    "profile.greeting": {
+      "comment": "Profile header greeting.",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hallo, %1$@"
+          },
+          "substitutions": {
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hi, %1$@"
+          },
+          "substitutions": {
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        }
+      }
+    },
+    "stats.followers": {
+      "comment": "Follower count label.",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld Follower"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "%lld"
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld followers"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "%lld"
+            }
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

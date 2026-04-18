@@ -1,0 +1,52 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "checkout_summary_title": {
+      "comment": "Checkout summary title.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Order summary"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Récapitulatif"
+          }
+        }
+      }
+    },
+    "checkout_summary_total": {
+      "comment": "Checkout total line.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total: %1$lld"
+          },
+          "substitutions": {
+            "amount": {
+              "argNum": 1,
+              "formatSpecifier": "%lld"
+            }
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total : %1$lld"
+          },
+          "substitutions": {
+            "amount": {
+              "argNum": 1,
+              "formatSpecifier": "%lld"
+            }
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

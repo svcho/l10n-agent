@@ -1,1 +1,70 @@
-{}
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "onboarding.welcome.title": {
+      "comment": "First-launch hero. Friendly tone.",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Willkommen zu Hause, %1$@"
+          },
+          "substitutions": {
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welcome home, %1$@"
+          },
+          "substitutions": {
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bienvenido a casa, %1$@"
+          },
+          "substitutions": {
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        }
+      }
+    },
+    "settings.privacy.title": {
+      "comment": "Settings screen title.",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Datenschutz"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacidad"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

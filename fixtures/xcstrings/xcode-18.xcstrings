@@ -1,0 +1,43 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "sharing.invite.message": {
+      "comment": "Invite activity feed item.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ invited %1$@ on %2$@"
+          },
+          "substitutions": {
+            "date": {
+              "argNum": 2,
+              "formatSpecifier": "date"
+            },
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ha invitato %1$@ il %2$@"
+          },
+          "substitutions": {
+            "date": {
+              "argNum": 2,
+              "formatSpecifier": "date"
+            },
+            "name": {
+              "argNum": 1,
+              "formatSpecifier": "%@"
+            }
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

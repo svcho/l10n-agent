@@ -36,5 +36,25 @@ describe('buildDoctorReport', () => {
         total_entries: 2,
       },
     ]);
+    expect(report.platforms).toEqual([
+      {
+        configured: true,
+        key_count: 2,
+        locales: ['de', 'en', 'es'],
+        path: expect.stringContaining('fixtures/projects/happy-path/ios/MyApp/Localizable.xcstrings'),
+        platform: 'ios',
+        version: '1.0',
+      },
+      {
+        configured: true,
+        key_count: null,
+        locales: [],
+        path: expect.stringContaining(
+          'fixtures/projects/happy-path/android/app/src/main/res/values/strings.xml',
+        ),
+        platform: 'android',
+        version: null,
+      },
+    ]);
   });
 });

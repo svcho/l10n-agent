@@ -1,3 +1,4 @@
+import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
 import type { ProjectSnapshot } from './store/load.js';
 import type { CodexPreflightResult } from '../providers/codex-local.js';
 
@@ -19,8 +20,11 @@ export interface DoctorReport {
   locales: DoctorLocaleReport[];
   platforms: Array<{
     configured: boolean;
+    key_count: number | null;
+    locales: string[];
     path: string | null;
     platform: 'ios' | 'android';
+    version: string | null;
   }>;
   source_keys: number;
 }
@@ -84,6 +88,18 @@ export async function buildDoctorReport(
   const historyEntries = snapshot.history.value ?? [];
   const lastHistoryAt = historyEntries.length > 0 ? historyEntries[historyEntries.length - 1]?.ts ?? null : null;
 
+  const iosPlatformReport =
+    snapshot.platformPaths.ios && snapshot.config.platforms.ios
+      ? await new IosXcstringsAdapter({
+          sourceLocale: snapshot.config.source_locale,
+          ...(snapshot.config.platforms.ios.key_transform
+            ? { keyTransform: snapshot.config.platforms.ios.key_transform }
+            : {}),
+        })
+          .inspect(snapshot.platformPaths.ios)
+          .catch(() => null)
+      : null;
+
   return {
     cache_entries: snapshot.cache.value ? Object.keys(snapshot.cache.value.entries).length : 0,
     codex: await preflight(),
@@ -92,8 +108,11 @@ export async function buildDoctorReport(
     locales,
     platforms: (['ios', 'android'] as const).map((platform) => ({
       configured: snapshot.platformPaths[platform] !== null,
+      key_count: platform === 'ios' ? iosPlatformReport?.keyCount ?? null : null,
+      locales: platform === 'ios' ? iosPlatformReport?.locales ?? [] : [],
       path: snapshot.platformPaths[platform],
       platform,
+      version: platform === 'ios' ? iosPlatformReport?.version ?? null : null,
     })),
     source_keys: sourceKeys.length,
   };

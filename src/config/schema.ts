@@ -56,3 +56,4 @@ export const ConfigSchema = z
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type KeyCase = z.infer<typeof KeyCaseSchema>;
+export type KeyTransform = z.infer<typeof KeyTransformSchema>;

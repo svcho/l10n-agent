@@ -1,5 +1,12 @@
 import { access, constants } from 'node:fs/promises';
 
+import {
+  IosXcstringsAdapter,
+  buildCanonicalKeySetFromSource,
+  buildCanonicalKeySetFromTranslation,
+  compareCanonicalKeySets,
+} from '../adapters/ios/xcstrings.js';
+import { L10nError } from '../errors/l10n-error.js';
 import type { Diagnostic } from './diagnostics.js';
 import { compareDiagnostics, hasErrorDiagnostics } from './diagnostics.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
@@ -27,6 +34,17 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
   const diagnostics: Diagnostic[] = [];
   const sourceKeys = Object.keys(snapshot.source.value.keys);
   const sourceKeySet = new Set(sourceKeys);
+  const iosAdapterOptions = snapshot.config.platforms.ios
+    ? {
+        sourceLocale: snapshot.config.source_locale,
+        ...(snapshot.config.platforms.ios.key_transform
+          ? { keyTransform: snapshot.config.platforms.ios.key_transform }
+          : {}),
+      }
+    : null;
+  const iosAdapter = snapshot.platformPaths.ios
+    ? new IosXcstringsAdapter(iosAdapterOptions ?? { sourceLocale: snapshot.config.source_locale })
+    : null;
 
   diagnostics.push(...lintSourceKeys(snapshot.config, snapshot.source.value));
 
@@ -45,6 +63,44 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
         next: 'Create the configured platform file or fix the path in l10n/config.yaml.',
         summary: 'Configured platform path does not exist',
       });
+    }
+  }
+
+  if (iosAdapter && snapshot.platformPaths.ios) {
+    try {
+      const sourceCatalog = await iosAdapter.read(snapshot.platformPaths.ios, snapshot.config.source_locale);
+      diagnostics.push(
+        ...compareCanonicalKeySets(buildCanonicalKeySetFromSource(snapshot.source.value), sourceCatalog, {
+          locale: snapshot.config.source_locale,
+          path: snapshot.platformPaths.ios,
+          platform: 'ios',
+        }),
+      );
+
+      for (const translation of snapshot.translations) {
+        if (!translation.exists || !translation.value) {
+          continue;
+        }
+
+        const localeCatalog = await iosAdapter.read(snapshot.platformPaths.ios, translation.locale);
+        diagnostics.push(
+          ...compareCanonicalKeySets(
+            buildCanonicalKeySetFromTranslation(translation.value, snapshot.source.value),
+            localeCatalog,
+            {
+              locale: translation.locale,
+              path: snapshot.platformPaths.ios,
+              platform: 'ios',
+            },
+          ),
+        );
+      }
+    } catch (error) {
+      if (error instanceof L10nError) {
+        diagnostics.push(error.diagnostic);
+      } else {
+        throw error;
+      }
     }
   }
 

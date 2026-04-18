@@ -1,4 +1,5 @@
 import type { Config, KeyCase } from '../../config/schema.js';
+import { containsPluralSyntax } from '../placeholders/icu.js';
 import type { Diagnostic } from '../diagnostics.js';
 import type { SourceFile } from '../store/schemas.js';
 
@@ -19,10 +20,6 @@ function splitKeySegments(key: string, keyCase: KeyCase): string[] {
     case 'kebab':
       return key.split('-');
   }
-}
-
-function containsPluralSyntax(text: string): boolean {
-  return /\{\s*[\w.-]+\s*,\s*plural\s*,/u.test(text);
 }
 
 export function lintSourceKeys(config: Config, source: SourceFile): Diagnostic[] {

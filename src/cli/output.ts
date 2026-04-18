@@ -72,7 +72,11 @@ export function printDoctorReport(report: DoctorReport, options: OutputOptions):
   process.stdout.write('\nPlatforms:\n');
   for (const platform of report.platforms) {
     process.stdout.write(
-      `  ${platform.platform}: ${platform.configured ? platform.path : 'disabled'}\n`,
+      `  ${platform.platform}: ${
+        platform.configured ? platform.path : 'disabled'
+      }${platform.key_count !== null ? ` keys=${platform.key_count}` : ''}${
+        platform.locales.length > 0 ? ` locales=${platform.locales.join(',')}` : ''
+      }${platform.version ? ` version=${platform.version}` : ''}\n`,
     );
   }
 }
