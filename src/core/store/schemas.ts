@@ -48,8 +48,11 @@ export const CacheFileSchema = z.object({
 export const SyncStateFileSchema = z.object({
   batch_index: z.number().int().min(0),
   completed_translations: z.number().int().min(0),
+  current_key: z.string().min(1).optional(),
+  current_locale: LocaleCode.optional(),
   last_processed_key: z.string().min(1).optional(),
   last_processed_locale: LocaleCode.optional(),
+  pid: z.number().int().positive().optional(),
   started_at: z.string().datetime(),
   total_translations: z.number().int().min(0),
   updated_at: z.string().datetime(),

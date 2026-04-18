@@ -1,5 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import process from 'node:process';
 
 import { resolveAndroidLocalePath } from '../adapters/android/strings.js';
 import { buildCanonicalKeySetFromSource, type ExtendedCanonicalKeySet } from '../adapters/canonical.js';
@@ -94,10 +95,19 @@ export interface SyncReport {
   };
 }
 
+export interface SyncProgress {
+  completed: number;
+  current_key?: string;
+  current_locale?: string;
+  message: string;
+  total: number;
+}
+
 export interface SyncOptions {
   continueOnly?: boolean;
   dryRun?: boolean;
   locales?: string[];
+  onProgress?: (progress: SyncProgress) => void;
   provider?: TranslationProvider;
   strict?: boolean;
 }
@@ -400,6 +410,51 @@ async function persistLocaleState(
   localeState.dirty = false;
 }
 
+function createSyncProgressMessage(
+  task: Pick<SyncTask, 'cacheHit' | 'key' | 'locale'>,
+  completed: number,
+  total: number,
+): string {
+  const action = task.cacheHit ? 'Applying cached translation' : 'Translating';
+  return `${action} (${completed}/${total}) ${task.locale} ${task.key}`;
+}
+
+async function persistSyncProgressState(
+  snapshot: ProjectSnapshot,
+  options: {
+    completedTranslations: number;
+    currentTask?: Pick<SyncTask, 'key' | 'locale'> | null;
+    lastCompletedTask?: Pick<SyncTask, 'key' | 'locale'> | null;
+    startedAt: string;
+    totalTranslations: number;
+  },
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const state: SyncStateFile = {
+    batch_index: options.completedTranslations,
+    completed_translations: options.completedTranslations,
+    pid: process.pid,
+    started_at: options.startedAt,
+    total_translations: options.totalTranslations,
+    updated_at: timestamp,
+    version: 1,
+    ...(options.currentTask
+      ? {
+          current_key: options.currentTask.key,
+          current_locale: options.currentTask.locale,
+        }
+      : {}),
+    ...(options.lastCompletedTask
+      ? {
+          last_processed_key: options.lastCompletedTask.key,
+          last_processed_locale: options.lastCompletedTask.locale,
+        }
+      : {}),
+  };
+
+  await writeSyncState(snapshot.state.path, state);
+}
+
 export async function runSync(
   snapshot: ProjectSnapshot,
   options: SyncOptions = {},
@@ -506,6 +561,7 @@ export async function runSync(
   let translated = 0;
   let cacheHits = 0;
   let lastCompletedTask: Pick<SyncTask, 'key' | 'locale'> | null = null;
+  const startedAt = snapshot.state.value?.started_at ?? new Date().toISOString();
   const historyEntries = [...(snapshot.history.value ?? [])];
   const historyTimestamp = new Date().toISOString();
   const historyId = buildHistoryId(historyTimestamp, 'sync');
@@ -527,6 +583,26 @@ export async function runSync(
       ),
     ]),
   );
+
+  if (plan.total_pending_tasks > 0) {
+    options.onProgress?.({
+      completed: completedTranslations,
+      message: `Preparing sync for ${plan.total_pending_tasks} translations`,
+      total: plan.total_pending_tasks,
+    });
+    await persistSyncProgressState(snapshot, {
+      completedTranslations,
+      lastCompletedTask,
+      startedAt,
+      totalTranslations: plan.total_pending_tasks,
+    });
+  } else {
+    options.onProgress?.({
+      completed: 0,
+      message: 'Writing derived translation and platform files',
+      total: 0,
+    });
+  }
 
   for (const localePlan of plan.locales) {
     const localeState = localeStates.get(localePlan.locale);
@@ -552,6 +628,22 @@ export async function runSync(
     }
 
     for (const task of localePlan.pending_tasks) {
+      const nextCompleted = completedTranslations + 1;
+      options.onProgress?.({
+        completed: completedTranslations,
+        current_key: task.key,
+        current_locale: task.locale,
+        message: createSyncProgressMessage(task, nextCompleted, plan.total_pending_tasks),
+        total: plan.total_pending_tasks,
+      });
+      await persistSyncProgressState(snapshot, {
+        completedTranslations,
+        currentTask: task,
+        lastCompletedTask,
+        startedAt,
+        totalTranslations: plan.total_pending_tasks,
+      });
+
       if (task.cacheHit) {
         localeState.entries[task.key] = {
           model_version: task.cacheHit.modelVersion,
@@ -570,6 +662,12 @@ export async function runSync(
           locale: task.locale,
         };
         await persistLocaleState(localeState);
+        await persistSyncProgressState(snapshot, {
+          completedTranslations,
+          lastCompletedTask,
+          startedAt,
+          totalTranslations: plan.total_pending_tasks,
+        });
         continue;
       }
 
@@ -579,22 +677,13 @@ export async function runSync(
       } catch (error) {
         if (error instanceof L10nError && ['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)) {
           const timestamp = new Date().toISOString();
-          const state: SyncStateFile = {
-            batch_index: completedTranslations,
-            completed_translations: completedTranslations,
-            started_at: snapshot.state.value?.started_at ?? timestamp,
-            total_translations: plan.total_pending_tasks,
-            updated_at: timestamp,
-            version: 1,
-            ...(lastCompletedTask
-              ? {
-                  last_processed_key: lastCompletedTask.key,
-                  last_processed_locale: lastCompletedTask.locale,
-                }
-              : {}),
-          };
-
-          await writeSyncState(snapshot.state.path, state);
+          await persistSyncProgressState(snapshot, {
+            completedTranslations,
+            currentTask: task,
+            lastCompletedTask,
+            startedAt,
+            totalTranslations: plan.total_pending_tasks,
+          });
           await appendHistoryEntries(snapshot.history.path, historyEntries, [
             createSyncHistoryEntry(
               historyId,
@@ -620,6 +709,7 @@ export async function runSync(
         );
 
         if (options.strict) {
+          await removeFileIfExists(snapshot.state.path);
           return {
             diagnostics,
             ok: false,
@@ -664,6 +754,12 @@ export async function runSync(
 
       await persistLocaleState(localeState);
       await writeCacheFile(snapshot.cache.path, cacheEntries);
+      await persistSyncProgressState(snapshot, {
+        completedTranslations,
+        lastCompletedTask,
+        startedAt,
+        totalTranslations: plan.total_pending_tasks,
+      });
     }
 
     await persistLocaleState(localeState);
@@ -672,6 +768,12 @@ export async function runSync(
   for (const localeState of localeStates.values()) {
     await persistLocaleState(localeState);
   }
+
+  options.onProgress?.({
+    completed: completedTranslations,
+    message: 'Writing derived translation and platform files',
+    total: plan.total_pending_tasks,
+  });
 
   await writeProjectFiles(snapshot, snapshot.source.value, [...localeStates.values()], {
     cacheEntries,

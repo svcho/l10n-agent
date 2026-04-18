@@ -1,5 +1,7 @@
 # l10n-agent
 
+> Warning: this is an early experimental build. It may rewrite localization files in ways you do not want, and it may break parts of your repo workflow. Use it at your own risk, review diffs carefully, and test on a throwaway branch first.
+
 `l10n-agent` is a local-first CLI for iOS and Android localization workflows. It keeps a canonical JSON source of truth under `l10n/`, syncs native platform files, translates missing strings through a local Codex CLI session, preserves reviewed edits, enforces key style rules, and helps clean up duplicate or conflicted localization state without introducing a hosted backend.
 
 ## What this project is for
@@ -20,14 +22,14 @@ The intended workflow is:
 
 ## Scope and boundaries
 
-v1 supports:
+The current build supports:
 
 - native iOS `.xcstrings` and `Localizable.strings`
 - native Android `strings.xml`
 - local Codex CLI as the only provider-backed path
 - deterministic local files committed to git
 
-v1 explicitly does not include:
+The current build does not include:
 
 - hosted services or remote state
 - OTA/runtime translation delivery
@@ -35,7 +37,7 @@ v1 explicitly does not include:
 - non-mobile targets such as web, React Native, or Flutter
 - plural resource authoring support
 
-Plural ICU syntax is still out of scope. If source text contains plural syntax, the tool will fail loudly rather than guess.
+Plural ICU syntax is not supported. If source text contains plural syntax, the tool will fail loudly rather than guess.
 
 ## Key ideas
 
@@ -54,6 +56,8 @@ Plural ICU syntax is still out of scope. If source text contains plural syntax, 
   Reconcile source, translations, cache, history, and native platform files. Reviewed stale entries are preserved and warned on. Removed locales are archived.
 - `lint [--glossary] [--fix]`
   Validate key naming rules and, with `--glossary`, verify persisted translations preserve configured glossary terms. `--fix` uses the local Codex CLI to propose safe destination keys, applies the rename across managed localization files, and rewrites exact key-string references in supported repo code/config text files.
+- `status [--locale <locale>]`
+  Show whether a sync is currently running or was interrupted, how many translations are complete, and how much work remains per locale.
 - `check [--fast]`
   Deterministic CI gate for lint failures, missing translations, stale entries, orphaned keys, and platform drift.
 - `doctor`
@@ -79,15 +83,33 @@ Deterministic commands such as `lint`, `check`, `repair`, `rollback`, and `impor
 
 ## Install
 
+Build the package in this repo:
+
 ```bash
 npm install
 npm run build
-npm test
+npm link
 ```
 
-For local development:
+Then in any other folder, such as your iOS or Android app repo:
 
 ```bash
+l10n-agent --help
+l10n-agent init
+```
+
+If you want a fixed global install instead of a live link:
+
+```bash
+npm install -g /Users/svcho/Development/src/github.com/svcho/l10n-agent
+```
+
+`npm link` is usually better while you are developing this repo, because rebuilding here updates what the global `l10n-agent` command uses.
+
+For local development in this repo:
+
+```bash
+npm test
 npm run dev -- --help
 ```
 
@@ -195,6 +217,8 @@ If preflight fails, the tool returns actionable errors:
 - `L10N_E0052`
   Codex version is below the configured minimum.
 
+`sync` runs in the foreground, but it now writes in-flight progress to `.state.json` so another terminal can inspect status while the command is still active.
+
 If a provider-backed `sync` fails mid-run:
 
 - completed translation work is already persisted
@@ -209,12 +233,12 @@ If a provider-backed `sync` fails mid-run:
 
 Use this when the app already has committed iOS string files (`.xcstrings` or `Localizable.strings`), Android `strings.xml`, or both.
 
-#### 1. Install the tool and verify the repo
+#### 1. Build and link the CLI
 
 ```bash
 npm install
 npm run build
-npm test
+npm link
 ```
 
 #### 2. Install and log in to Codex
@@ -230,7 +254,8 @@ codex login
 From the app repo root:
 
 ```bash
-npm run dev -- init
+l10n-agent --help
+l10n-agent init
 ```
 
 What happens:
@@ -244,10 +269,10 @@ What happens:
 If auto-detection is wrong or incomplete, pass paths explicitly:
 
 ```bash
-npm run dev -- init --ios-path ios/MyApp/Localizable.xcstrings --android-path android/app/src/main/res/values/strings.xml
+l10n-agent init --ios-path ios/MyApp/Localizable.xcstrings --android-path android/app/src/main/res/values/strings.xml
 
 # or with legacy iOS strings files
-npm run dev -- init --ios-path MyApp/en.lproj/Localizable.strings
+l10n-agent init --ios-path MyApp/en.lproj/Localizable.strings
 ```
 
 #### 4. Review the generated config
@@ -266,8 +291,8 @@ Check:
 #### 5. Inspect current health
 
 ```bash
-npm run dev -- doctor
-npm run dev -- check
+l10n-agent doctor
+l10n-agent check
 ```
 
 Use `doctor` to understand existing coverage and `check` to find drift or missing entries.
@@ -275,7 +300,7 @@ Use `doctor` to understand existing coverage and `check` to find drift or missin
 #### 6. Preview the first reconciliation
 
 ```bash
-npm run dev -- sync --dry-run
+l10n-agent sync --dry-run
 ```
 
 This shows:
@@ -290,7 +315,7 @@ This shows:
 #### 7. Apply the first sync
 
 ```bash
-npm run dev -- sync
+l10n-agent sync
 ```
 
 This will:
@@ -300,14 +325,71 @@ This will:
 - preserve reviewed translations
 - persist cache and history
 
-#### 8. Start normal maintenance
+#### 8. Add a new locale and translate it
 
-For all future copy changes:
+Add the locale to `l10n/config.yaml`:
+
+```yaml
+target_locales:
+  - de
+  - es
+  - fr
+```
+
+Preview the work:
+
+```bash
+l10n-agent sync --dry-run
+```
+
+Run translation and write the derived files:
+
+```bash
+l10n-agent sync
+```
+
+This creates `l10n/translations.fr.json` if it does not already exist, translates all existing source keys for `fr`, updates iOS localization files, and updates Android string resources.
+
+Verify the result:
+
+```bash
+l10n-agent doctor
+l10n-agent check
+```
+
+If you want to translate only one locale during a run:
+
+```bash
+l10n-agent sync --locale fr
+```
+
+#### 9. Add a new key and translate it
+
+Add the key to `l10n/source.en.json`:
+
+```json
+"settings.notifications.title": {
+  "text": "Notifications",
+  "description": "Settings row title.",
+  "placeholders": {}
+}
+```
+
+Then run:
+
+```bash
+l10n-agent sync --dry-run
+l10n-agent sync
+```
+
+#### 10. Start normal maintenance
+
+For copy changes:
 
 1. Edit `l10n/source.<locale>.json`
-2. Run `npm run dev -- sync --dry-run`
-3. Run `npm run dev -- sync`
-4. Run `npm run dev -- check`
+2. Run `l10n-agent sync --dry-run`
+3. Run `l10n-agent sync`
+4. Run `l10n-agent check`
 
 ### B. Project with no localization setup yet
 
@@ -346,7 +428,7 @@ If the project supports only one platform, that is enough. If it supports both, 
 #### 2. Initialize `l10n-agent`
 
 ```bash
-npm run dev -- init --source-locale en --target-locale de --target-locale es --no-import-existing
+l10n-agent init --source-locale en --target-locale de --target-locale es --no-import-existing
 ```
 
 Use `--no-import-existing` when there is nothing useful to import yet.
@@ -383,7 +465,7 @@ Example:
 #### 4. Run the first sync
 
 ```bash
-npm run dev -- sync
+l10n-agent sync
 ```
 
 This generates:
@@ -449,7 +531,7 @@ Recommended order:
 2. Normalize keys in canonical source with `lint --fix` for batch-safe cleanup or `rename` when you want to control the exact destination key.
 3. Run `dedupe` to identify exact or semantic duplicate strings before wiring more code to them.
 4. Replace hard-coded code literals with lookups to the imported canonical keys.
-5. Keep future copy edits in `l10n/source.<locale>.json`, not directly in app code or native localization files.
+5. Keep copy edits in `l10n/source.<locale>.json`, not directly in app code or native localization files.
 
 ## Working with keys
 
@@ -472,12 +554,12 @@ Android usually uses `snake_case` as a platform transform while canonical keys s
 ## Typical day-to-day workflow
 
 1. Add or edit canonical source keys in `l10n/source.<locale>.json`
-2. Run `npm run dev -- lint`
-3. If key-style violations are straightforward, run `npm run dev -- lint --fix` to apply Codex-suggested renames and rewrite exact key-string references in supported repo code/config text files
-4. Run `npm run dev -- sync --dry-run`
-5. Run `npm run dev -- sync`
+2. Run `l10n-agent lint`
+3. If key-style violations are straightforward, run `l10n-agent lint --fix` to apply Codex-suggested renames and rewrite exact key-string references in supported repo code/config text files
+4. Run `l10n-agent sync --dry-run`
+5. Run `l10n-agent sync`
 6. Review generated diffs
-7. Run `npm run dev -- check`
+7. Run `l10n-agent check`
 
 When changing locale configuration:
 

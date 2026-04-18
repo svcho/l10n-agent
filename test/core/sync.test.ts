@@ -162,6 +162,75 @@ describe('runSync', () => {
     ).toBe('Notificaciones');
   });
 
+  it('persists in-flight sync status and emits progress updates while translations are running', async () => {
+    const projectDir = await createTempProject('sync-progress');
+    await updateSourceFile(projectDir, (source) => {
+      source.keys['settings.notifications.title'] = {
+        description: 'Settings screen notification row title.',
+        placeholders: {},
+        text: 'Notifications',
+      };
+    });
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const progress: string[] = [];
+    let releaseFirstTranslation: (() => void) | null = null;
+    let markFirstTranslationStarted: (() => void) | null = null;
+    const firstTranslationStarted = new Promise<void>((resolve) => {
+      markFirstTranslationStarted = resolve;
+    });
+
+    const syncPromise = runSync(snapshot, {
+      onProgress(update) {
+        progress.push(update.message);
+      },
+      provider: {
+        id: 'test-provider',
+        preflight: async () => ({ ok: true }),
+        translate: async (request) => {
+          if (request.targetLocale === 'de' && releaseFirstTranslation === null) {
+            markFirstTranslationStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstTranslation = resolve;
+            });
+          }
+
+          return {
+            modelVersion: 'test-model',
+            text: request.targetLocale === 'de' ? 'Benachrichtigungen' : 'Notificaciones',
+          };
+        },
+      },
+    });
+
+    await firstTranslationStarted;
+
+    const midRunSnapshot = await loadProjectSnapshot(projectDir);
+    expect(midRunSnapshot.state.value).toMatchObject({
+      completed_translations: 0,
+      current_key: 'settings.notifications.title',
+      current_locale: 'de',
+      pid: process.pid,
+      total_translations: 2,
+    });
+
+    releaseFirstTranslation?.();
+
+    const report = await syncPromise;
+    expect(report.ok).toBe(true);
+    expect(progress).toEqual(
+      expect.arrayContaining([
+        'Preparing sync for 2 translations',
+        'Translating (1/2) de settings.notifications.title',
+        'Translating (2/2) es settings.notifications.title',
+        'Writing derived translation and platform files',
+      ]),
+    );
+
+    const refreshed = await loadProjectSnapshot(projectDir);
+    expect(refreshed.state.exists).toBe(false);
+  });
+
   it('skips placeholder-mismatched translations while applying other successful locales', async () => {
     const projectDir = await createTempProject('sync-placeholder');
     await updateSourceFile(projectDir, (source) => {

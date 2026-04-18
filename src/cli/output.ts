@@ -10,6 +10,7 @@ import type { ImportReport } from '../core/import.js';
 import type { InitReport } from '../core/init.js';
 import type { RenameReport } from '../core/rename.js';
 import type { RollbackReport } from '../core/rollback.js';
+import type { StatusReport } from '../core/status.js';
 import type { SyncPlan, SyncReport } from '../core/sync.js';
 
 export interface OutputOptions {
@@ -158,6 +159,70 @@ export function printSyncReport(report: SyncReport, options: OutputOptions): voi
 
   const statusText = report.ok ? colors.green('ok') : colors.red('failed');
   process.stdout.write(`\n${statusText}  ${JSON.stringify(report.summary)}\n`);
+}
+
+export function printStatusReport(report: StatusReport, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  const colors = createChalk(options.color);
+  const stateText =
+    report.summary.sync_state === 'running'
+      ? colors.green('running')
+      : report.summary.sync_state === 'interrupted'
+        ? colors.yellow('interrupted')
+        : colors.blue('idle');
+
+  process.stdout.write(`Sync status: ${stateText}\n`);
+  if (report.active_sync) {
+    process.stdout.write(
+      `Progress: ${report.active_sync.completed_translations}/${report.active_sync.total_translations} (${report.active_sync.percent_complete.toFixed(1)}%)\n`,
+    );
+    process.stdout.write(
+      `Started: ${report.active_sync.started_at}, updated: ${report.active_sync.updated_at}\n`,
+    );
+    if (report.active_sync.current_locale && report.active_sync.current_key) {
+      process.stdout.write(
+        `Current: ${report.active_sync.current_locale} ${report.active_sync.current_key}\n`,
+      );
+    }
+    if (report.active_sync.last_processed_locale && report.active_sync.last_processed_key) {
+      process.stdout.write(
+        `Last completed: ${report.active_sync.last_processed_locale} ${report.active_sync.last_processed_key}\n`,
+      );
+    }
+  }
+
+  process.stdout.write(
+    `Pending translations: ${report.summary.pending_tasks}, provider requests: ${report.summary.provider_requests}, cache hits: ${report.summary.cache_hits}, reviewed skipped: ${report.summary.reviewed_skipped}, removed: ${report.summary.removed}\n`,
+  );
+
+  if (report.locales.length > 0) {
+    process.stdout.write('\nLocales:\n');
+    for (const locale of report.locales) {
+      process.stdout.write(
+        `  ${locale.locale}: pending=${locale.pending} missing=${locale.missing} stale=${locale.stale_retranslations} reviewed_stale=${locale.reviewed_stale} cache_hits=${locale.cache_hits}\n`,
+      );
+    }
+  }
+
+  for (const diagnostic of report.diagnostics) {
+    const level =
+      diagnostic.level === 'error'
+        ? colors.red(diagnostic.level)
+        : diagnostic.level === 'warn'
+          ? colors.yellow(diagnostic.level)
+          : colors.blue(diagnostic.level);
+    process.stdout.write(`\n${level}  ${diagnostic.code}  ${diagnostic.summary}\n`);
+    for (const [key, value] of Object.entries(diagnostic.details ?? {})) {
+      process.stdout.write(`       ${key}: ${String(value)}\n`);
+    }
+    if (diagnostic.next) {
+      process.stdout.write(`       next: ${diagnostic.next}\n`);
+    }
+  }
 }
 
 export function printDedupeReport(report: DedupeReport, options: OutputOptions): void {

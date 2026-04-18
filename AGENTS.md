@@ -43,6 +43,7 @@ Native files are derived outputs. They should not become the long-term source of
 - `init`
 - `sync`
 - `lint`
+- `status`
 - `check`
 - `doctor`
 - `dedupe`

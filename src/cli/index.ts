@@ -16,6 +16,7 @@ import { lintSourceKeys } from '../core/linter/lint-keys.js';
 import { runRepair } from '../core/repair.js';
 import { runRename } from '../core/rename.js';
 import { runRollback } from '../core/rollback.js';
+import { buildStatusReport } from '../core/status.js';
 import { loadProjectSnapshot } from '../core/store/load.js';
 import { buildSyncPlan, runSync } from '../core/sync.js';
 import { L10nError } from '../errors/l10n-error.js';
@@ -28,6 +29,7 @@ import {
   printInitReport,
   printRenameReport,
   printRollbackReport,
+  printStatusReport,
   printSyncPlan,
   printSyncReport,
 } from './output.js';
@@ -434,6 +436,22 @@ program
   });
 
 program
+  .command('status')
+  .description('Show current sync progress and remaining translation work.')
+  .option('--locale <locale>', 'limit status to one locale', (value, previous: string[] = []) => [...previous, value], [])
+  .action(async function statusAction(this: Command) {
+    await runAction(this, async (options) => {
+      const commandOptions = this.opts<{ locale: string[] }>();
+      const snapshot = await loadProjectSnapshot(options.cwd, options.config);
+      const report = buildStatusReport(snapshot, {
+        locales: commandOptions.locale,
+      });
+      printStatusReport(report, options);
+      return report.ok ? 0 : 1;
+    });
+  });
+
+program
   .command('sync')
   .description('Reconcile source, translations, cache, and platform files.')
   .option('--continue', 'resume only if a partial sync state exists', false)
@@ -454,13 +472,29 @@ program
         snapshot.config.provider.codex_min_version,
         snapshot.config.provider.model,
       );
-      const report = await runSync(snapshot, {
-        continueOnly: commandOptions.continue,
-        dryRun: commandOptions.dryRun,
-        locales: commandOptions.locale,
-        provider,
-        strict: commandOptions.strict,
-      });
+      const spinner = createSpinner(!commandOptions.dryRun && !options.json && process.stderr.isTTY);
+      let report: Awaited<ReturnType<typeof runSync>>;
+
+      if (!commandOptions.dryRun) {
+        spinner.start('Codex is checking sync availability');
+      }
+
+      try {
+        report = await runSync(snapshot, {
+          continueOnly: commandOptions.continue,
+          dryRun: commandOptions.dryRun,
+          locales: commandOptions.locale,
+          onProgress(progress) {
+            spinner.update(progress.message);
+          },
+          provider,
+          strict: commandOptions.strict,
+        });
+        spinner.stop();
+      } catch (error) {
+        spinner.stop();
+        throw error;
+      }
 
       if (commandOptions.dryRun) {
         printSyncPlan(buildSyncPlan(snapshot, { locales: commandOptions.locale }), report, options);
