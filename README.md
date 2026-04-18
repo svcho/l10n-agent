@@ -288,7 +288,20 @@ Check:
 - `keys.case`
 - `keys.max_depth`
 - `keys.scopes`
+- `provider.model` if you want to pin Codex to a specific model for provider-backed commands
 - `provider.glossary`
+
+Optional provider model pin:
+
+```yaml
+provider:
+  type: codex-local
+  codex_min_version: 0.30.0
+  model: gpt-5.1
+  glossary: {}
+```
+
+When `provider.model` is set, `sync`, `dedupe`, and `lint --fix` pass that model to the local Codex CLI. If you omit it, Codex uses its default model selection.
 
 #### 5. Inspect current health
 

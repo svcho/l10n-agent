@@ -228,6 +228,10 @@ program
   .option('--ios-path <path>', 'relative path to iOS .xcstrings or Localizable.strings')
   .option('--import-from <source>', 'import existing strings from iOS (xcstrings/strings) or android')
   .option('--no-import-existing', 'skip importing existing platform strings')
+  .option(
+    '--provider-model <model>',
+    'persist provider.model in l10n/config.yaml for sync, dedupe, and lint --fix',
+  )
   .option('--source-locale <locale>', 'canonical source locale', 'en')
   .option(
     '--target-locale <locale>',
@@ -242,6 +246,7 @@ program
         importExisting?: boolean;
         importFrom?: 'android' | 'xcstrings';
         iosPath?: string;
+        providerModel?: string;
         sourceLocale?: string;
         targetLocale: string[];
       }>();
@@ -252,6 +257,7 @@ program
           : {}),
         ...(commandOptions.importFrom ? { importFrom: commandOptions.importFrom } : {}),
         ...(commandOptions.iosPath ? { iosPath: commandOptions.iosPath } : {}),
+        ...(commandOptions.providerModel ? { providerModel: commandOptions.providerModel } : {}),
         ...(commandOptions.sourceLocale ? { sourceLocale: commandOptions.sourceLocale } : {}),
         ...(commandOptions.targetLocale.length > 0 ? { targetLocales: commandOptions.targetLocale } : {}),
       });

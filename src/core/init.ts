@@ -90,6 +90,7 @@ async function detectPlatformPaths(rootDir: string): Promise<DetectedPlatformPat
 function buildConfig(options: {
   androidPath: string | null;
   iosPath: string | null;
+  providerModel?: string;
   sourceLocale: string;
   targetLocales: string[];
 }): Config {
@@ -123,6 +124,7 @@ function buildConfig(options: {
     provider: {
       codex_min_version: '0.30.0',
       glossary: {},
+      ...(options.providerModel ? { model: options.providerModel } : {}),
       type: 'codex-local',
     },
     source_locale: options.sourceLocale,
@@ -139,6 +141,7 @@ export async function runInit(
     importExisting?: boolean;
     importFrom?: ImportSource;
     iosPath?: string;
+    providerModel?: string;
     sourceLocale?: string;
     targetLocales?: string[];
   } = {},
@@ -195,6 +198,7 @@ export async function runInit(
   const config = buildConfig({
     androidPath,
     iosPath,
+    ...(options.providerModel ? { providerModel: options.providerModel } : {}),
     sourceLocale,
     targetLocales: effectiveTargetLocales,
   });

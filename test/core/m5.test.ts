@@ -202,6 +202,7 @@ describe('Milestone 5 flows', () => {
     await rm(join(projectDir, 'l10n'), { force: true, recursive: true });
 
     const report = await runInit(projectDir, undefined, {
+      providerModel: 'gpt-5.1',
       sourceLocale: 'en',
       targetLocales: ['de', 'es'],
     });
@@ -214,6 +215,7 @@ describe('Milestone 5 flows', () => {
       'onboarding.welcome.title',
       'settings.privacy.title',
     ]);
+    expect(snapshot.config.provider.model).toBe('gpt-5.1');
     expect(snapshot.history.value?.map((entry) => entry.op)).toEqual(['init', 'import']);
   });
 

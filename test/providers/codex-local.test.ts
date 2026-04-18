@@ -81,4 +81,43 @@ describe('CodexLocalProvider', () => {
       },
     });
   });
+
+  it('passes the configured model through to Codex executions', async () => {
+    const seenRequests: Array<{ model?: string }> = [];
+    const provider = new CodexLocalProvider({
+      cwd: process.cwd(),
+      minimumVersion: '0.30.0',
+      model: 'gpt-5.1',
+      transport: {
+        run: async (request) => {
+          seenRequests.push({ model: request.model });
+          return {
+            exitCode: 0,
+            stderr: '',
+            stdout: `${JSON.stringify({
+              item: {
+                text: JSON.stringify({ text: 'Willkommen' }),
+                type: 'agent_message',
+              },
+              type: 'item.completed',
+            })}\n`,
+          };
+        },
+      },
+    });
+
+    const result = await provider.translate({
+      glossary: {},
+      placeholders: [],
+      sourceLocale: 'en',
+      sourceText: 'Welcome',
+      targetLocale: 'de',
+    });
+
+    expect(seenRequests).toEqual([{ model: 'gpt-5.1' }]);
+    expect(result).toEqual({
+      modelVersion: 'gpt-5.1',
+      text: 'Willkommen',
+    });
+  });
 });
