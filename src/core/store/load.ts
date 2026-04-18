@@ -18,7 +18,6 @@ import {
   TranslationFileSchema,
   type CacheFile,
   type HistoryEntry,
-  type LegacyCacheFile,
   type LegacySyncStateFile,
   type SourceFile,
   type SyncStateFile,
@@ -135,34 +134,13 @@ function createHistoryTrailingLineWarning(path: string, line: number): Diagnosti
   };
 }
 
-function migrateLegacyCacheFile(cache: LegacyCacheFile): CacheFile {
+function createCacheResetWarning(path: string): Diagnostic {
   return {
-    entries: Object.entries(cache.entries)
-      .flatMap(([cacheKey, entry]) => {
-        const [sourceHash, locale, ...modelVersionParts] = cacheKey.split('|');
-        const modelVersion = modelVersionParts.join('|');
-
-        if (!sourceHash || !locale || modelVersion.length === 0) {
-          return [];
-        }
-
-        return [
-          {
-            cached_at: entry.cached_at,
-            locale,
-            model_version: modelVersion,
-            source_hash: sourceHash,
-            text: entry.text,
-          },
-        ];
-      })
-      .sort((left, right) =>
-        left.source_hash.localeCompare(right.source_hash) ||
-        left.locale.localeCompare(right.locale) ||
-        left.model_version.localeCompare(right.model_version) ||
-        left.cached_at.localeCompare(right.cached_at),
-      ),
-    version: 2,
+    code: 'L10N_E0086',
+    details: { path },
+    level: 'warn',
+    next: 'All translations will be re-fetched from the provider on the next sync.',
+    summary: 'Cache reset due to schema upgrade — translations will re-run',
   };
 }
 
@@ -245,7 +223,9 @@ function parseHistoryLines(
   return { diagnostics, entries };
 }
 
-async function loadOptionalCache(path: string): Promise<LoadedOptionalFile<CacheFile>> {
+async function loadOptionalCache(path: string): Promise<{ cache: LoadedOptionalFile<CacheFile>; diagnostics: Diagnostic[] }> {
+  const emptyCache: CacheFile = { entries: [], version: 3 };
+
   try {
     const rawText = await readTextFile(path);
 
@@ -265,22 +245,28 @@ async function loadOptionalCache(path: string): Promise<LoadedOptionalFile<Cache
     const currentCache = CacheFileSchema.safeParse(parsedJson);
     if (currentCache.success) {
       return {
-        exists: true,
-        path,
-        value: currentCache.data,
+        cache: { exists: true, path, value: currentCache.data },
+        diagnostics: [],
       };
     }
 
+    // Legacy v1 or v2 — silently drop entries and warn so the next sync re-fetches.
     const legacyCache = LegacyCacheFileSchema.safeParse(parsedJson);
-    if (legacyCache.success) {
+    const isLegacyVersion =
+      legacyCache.success ||
+      (typeof parsedJson === 'object' &&
+        parsedJson !== null &&
+        'version' in parsedJson &&
+        (parsedJson.version === 1 || parsedJson.version === 2));
+
+    if (isLegacyVersion) {
       return {
-        exists: true,
-        path,
-        value: migrateLegacyCacheFile(legacyCache.data),
+        cache: { exists: true, path, value: emptyCache },
+        diagnostics: [createCacheResetWarning(path)],
       };
     }
 
-    const issue = currentCache.error.issues[0] ?? legacyCache.error.issues[0];
+    const issue = currentCache.error.issues[0];
     throw new L10nError({
       code: 'L10N_E0060',
       details: {
@@ -297,9 +283,8 @@ async function loadOptionalCache(path: string): Promise<LoadedOptionalFile<Cache
     }
 
     return {
-      exists: false,
-      path,
-      value: null,
+      cache: { exists: false, path, value: null },
+      diagnostics: [],
     };
   }
 }
@@ -464,7 +449,8 @@ export async function loadProjectSnapshot(
     }),
   );
 
-  const cache = await loadOptionalCache(resolve(l10nDir, '.cache.json'));
+  const { cache, diagnostics: cacheDiagnostics } = await loadOptionalCache(resolve(l10nDir, '.cache.json'));
+  diagnostics.push(...cacheDiagnostics);
   const history = await loadOptionalHistory(resolve(l10nDir, '.history.jsonl'));
   diagnostics.push(...history.diagnostics);
   const state = await loadOptionalSyncState(resolve(l10nDir, '.state.json'), configHash, sourceFileHash);

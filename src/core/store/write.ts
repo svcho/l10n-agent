@@ -37,12 +37,13 @@ export async function writeCacheFile(
     (left, right) =>
       left.source_hash.localeCompare(right.source_hash) ||
       left.locale.localeCompare(right.locale) ||
+      left.config_hash.localeCompare(right.config_hash) ||
       left.model_version.localeCompare(right.model_version) ||
       left.cached_at.localeCompare(right.cached_at),
   );
   await writeJsonFileAtomic(path, {
     entries: sortedEntries,
-    version: 2,
+    version: 3,
   } satisfies CacheFile);
 }
 
@@ -80,6 +81,7 @@ export function upsertCacheEntry(entries: CacheEntry[], entry: CacheEntry): Cach
         !(
           current.source_hash === entry.source_hash &&
           current.locale === entry.locale &&
+          current.config_hash === entry.config_hash &&
           current.model_version === entry.model_version
         ),
     ),

@@ -77,7 +77,7 @@ describe('loadProjectSnapshot', () => {
     );
   });
 
-  it('migrates v1 cache entries and preserves model versions that contain pipes', async () => {
+  it('drops legacy v1 cache files with a warn diagnostic instead of migrating them', async () => {
     const projectDir = await createTempProject('cache-migration');
     const cachePath = join(projectDir, 'l10n/.cache.json');
     const sourcePath = join(projectDir, 'l10n/source.en.json');
@@ -115,14 +115,95 @@ describe('loadProjectSnapshot', () => {
     const refreshed = await loadProjectSnapshot(projectDir);
     const plan = buildSyncPlan(refreshed);
 
-    expect(refreshed.cache.value?.version).toBe(2);
-    expect(refreshed.cache.value?.entries).toEqual([
-      expect.objectContaining({
-        locale: 'de',
-        model_version: 'gpt-5|rc1',
-        source_hash: notificationHash,
+    // v1 cache is now silently dropped so that all entries are re-fetched with the current config hash.
+    expect(refreshed.cache.value?.version).toBe(3);
+    expect(refreshed.cache.value?.entries).toHaveLength(0);
+    expect(plan.total_cache_hits).toBe(0);
+    expect(refreshed.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'L10N_E0086' }),
+      ]),
+    );
+  });
+
+  it('drops legacy v2 cache files with a warn diagnostic', async () => {
+    const projectDir = await createTempProject('cache-migration-v2');
+    const cachePath = join(projectDir, 'l10n/.cache.json');
+
+    await writeFile(
+      cachePath,
+      stableStringify({
+        entries: [
+          {
+            cached_at: '2026-04-18T10:00:00.000Z',
+            locale: 'de',
+            model_version: 'gpt-5',
+            source_hash: 'sha256:ae7593171bfe263eb9f504282b37fe29fa76e638ac6e604f1cc6585eff49d9b6',
+            text: 'Benachrichtigungen',
+          },
+        ],
+        version: 2,
       }),
-    ]);
+      'utf8',
+    );
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+
+    expect(snapshot.cache.value?.version).toBe(3);
+    expect(snapshot.cache.value?.entries).toHaveLength(0);
+    expect(snapshot.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'L10N_E0086' }),
+      ]),
+    );
+  });
+
+  it('accepts a valid v3 cache file and uses its entries for cache hits', async () => {
+    const projectDir = await createTempProject('cache-v3-roundtrip');
+    const cachePath = join(projectDir, 'l10n/.cache.json');
+    const sourcePath = join(projectDir, 'l10n/source.en.json');
+    const source = JSON.parse(await readFile(sourcePath, 'utf8')) as {
+      keys: Record<string, unknown>;
+      version: number;
+    };
+    source.keys['settings.notifications.title'] = {
+      description: 'Settings screen notification row title.',
+      placeholders: {},
+      text: 'Notifications',
+    };
+    await writeFile(sourcePath, stableStringify(source), 'utf8');
+
+    const updatedSnapshot = await loadProjectSnapshot(projectDir);
+    const notificationHash = updatedSnapshot.source.hashes.get('settings.notifications.title');
+
+    // Write a correctly-shaped v3 cache file that matches the current config hash.
+    const { computeProviderCacheKeyHash } = await import('../../../src/core/store/hash.js');
+    const configHash = computeProviderCacheKeyHash(updatedSnapshot.config);
+
+    await writeFile(
+      cachePath,
+      stableStringify({
+        entries: [
+          {
+            cached_at: '2026-04-18T10:00:00.000Z',
+            config_hash: configHash,
+            locale: 'de',
+            model_version: 'gpt-5',
+            source_hash: notificationHash,
+            text: 'Benachrichtigungen',
+          },
+        ],
+        version: 3,
+      }),
+      'utf8',
+    );
+
+    const refreshed = await loadProjectSnapshot(projectDir);
+    const plan = buildSyncPlan(refreshed);
+
+    expect(refreshed.cache.value?.version).toBe(3);
+    expect(refreshed.cache.value?.entries).toHaveLength(1);
     expect(plan.total_cache_hits).toBe(1);
+    expect(refreshed.diagnostics.some((d) => d.code === 'L10N_E0086')).toBe(false);
   });
 });

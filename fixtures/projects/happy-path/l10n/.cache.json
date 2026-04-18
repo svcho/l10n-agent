@@ -1,9 +1,13 @@
 {
-  "version": 1,
-  "entries": {
-    "sha256:ae7593171bfe263eb9f504282b37fe29fa76e638ac6e604f1cc6585eff49d9b6|de|gpt-5-2026-03-01": {
-      "text": "Willkommen zu Hause, {name}",
-      "cached_at": "2026-04-18T12:00:00Z"
+  "entries": [
+    {
+      "cached_at": "2026-04-18T12:00:00.000Z",
+      "config_hash": "sha256:0187134ba323030e91ed4ca359e44670f1f501202728544cafb57b699d9e4bc4",
+      "locale": "de",
+      "model_version": "gpt-5-2026-03-01",
+      "source_hash": "sha256:ae7593171bfe263eb9f504282b37fe29fa76e638ac6e604f1cc6585eff49d9b6",
+      "text": "Willkommen zu Hause, {name}"
     }
-  }
+  ],
+  "version": 3
 }

@@ -63,8 +63,10 @@ Native files are derived outputs. They should not become the long-term source of
 - tests must stay offline; no live Codex calls in CI
 - provider-backed behavior must stay isolated to `src/providers/`
 - reviewed translations must never be silently overwritten
-- placeholder parity must be preserved across translations
+- placeholder parity must be preserved across translations (order-sensitive for digit-named positional placeholders; count-sensitive for all names)
 - semantic dedupe may propose merges but must never auto-merge keys
+- cache hits require matching `config_hash` (provider-relevant config subset) in addition to `source_hash` and `locale`; changing glossary or provider settings busts affected entries
+- `rollback` must acquire the sync lock before any file I/O and must validate the target snapshot before creating a recovery snapshot
 
 ## Provider model
 
@@ -90,6 +92,8 @@ Failure codes currently matter as product behavior:
 - `L10N_E0053` rate limit or quota
 - `L10N_E0054` subprocess failure
 - `L10N_E0055` malformed provider protocol/output
+- `L10N_E0079` sync lock already held (also used for rollback lock contention)
+- `L10N_E0086` cache schema upgrade — v1/v2 cache dropped, translations will re-run
 
 ## Data model summary
 
@@ -113,6 +117,14 @@ Important translation entry semantics:
 - `source_hash`
   Current source-copy fingerprint used for drift detection.
 
+Cache entry semantics (`l10n/.cache.json` schema v3):
+
+- `source_hash` — fingerprint of the source key text and placeholders
+- `locale` — target locale code
+- `config_hash` — fingerprint of the provider-relevant config subset (glossary, model, provider type, minimum version); changing any of these fields invalidates cached entries for affected keys
+- `model_version` — model identifier returned by the provider at translation time
+- `text` — cached translation text
+
 ## Important paths
 
 - `src/cli/`
@@ -132,7 +144,7 @@ Important translation entry semantics:
 - `src/core/rename.ts`
   transactional key renaming across managed state
 - `src/core/rollback.ts`
-  history-based restoration
+  history-based restoration; acquires sync lock and validates target snapshot before any file I/O
 - `src/providers/codex-local.ts`
   Codex preflight, structured prompts, and replay transport
 - `src/adapters/ios/`

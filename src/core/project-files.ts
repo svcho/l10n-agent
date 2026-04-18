@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { relative, resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 
 import {
   buildCanonicalKeySetFromSource,
@@ -33,7 +33,7 @@ export function resolveManagedSnapshotPath(l10nDir: string, historyId: string): 
   return resolve(l10nDir, '.snapshots', `${historyId}.json`);
 }
 
-async function loadManagedSnapshot(l10nDir: string, historyId: string): Promise<ManagedFileSnapshot> {
+export async function loadManagedSnapshot(l10nDir: string, historyId: string): Promise<ManagedFileSnapshot> {
   const snapshotPath = resolveManagedSnapshotPath(l10nDir, historyId);
   let snapshot: unknown;
 
@@ -70,6 +70,32 @@ async function loadManagedSnapshot(l10nDir: string, historyId: string): Promise<
   }
 
   return snapshot as ManagedFileSnapshot;
+}
+
+/**
+ * Validates that a managed snapshot exists, is structurally sound, and that
+ * every file path it contains resolves safely within rootDir (no path traversal).
+ * Throws L10N_E0062 on any violation so callers can fail-fast before side effects.
+ */
+export async function validateManagedSnapshot(
+  rootDir: string,
+  l10nDir: string,
+  historyId: string,
+): Promise<void> {
+  const snapshot = await loadManagedSnapshot(l10nDir, historyId);
+
+  for (const relativePath of Object.keys(snapshot.files)) {
+    const absolute = resolve(rootDir, relativePath);
+    if (absolute !== rootDir && !absolute.startsWith(rootDir + sep)) {
+      throw new L10nError({
+        code: 'L10N_E0062',
+        details: { file: relativePath, history_id: historyId },
+        level: 'error',
+        next: 'Do not use manually edited snapshot files. Restore files from git if needed.',
+        summary: 'Rollback snapshot contains a path that escapes the project root',
+      });
+    }
+  }
 }
 
 export function getManagedFilePaths(snapshot: ProjectSnapshot): string[] {

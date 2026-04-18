@@ -18,7 +18,7 @@ import {
   createRemoveLocaleHistoryEntry,
   createSyncHistoryEntry,
 } from './history.js';
-import { extractIcuPlaceholderNames } from './placeholders/icu.js';
+import { extractIcuPlaceholderMatches } from './placeholders/icu.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
 import {
   getManagedFilePathsWithExtras,
@@ -41,7 +41,7 @@ import {
   writeSyncState,
   writeTranslationFile,
 } from './store/write.js';
-import { computeConfigHash, computeSourceFileHash } from './store/hash.js';
+import { computeConfigHash, computeProviderCacheKeyHash, computeSourceFileHash } from './store/hash.js';
 
 export interface SyncTask {
   cacheHit: {
@@ -128,27 +128,77 @@ interface ActiveSyncContext {
 
 let activeSyncContext: ActiveSyncContext | null = null;
 
-function buildPlaceholderSignature(source: SourceKey, text: string): { counts: string; types: string } {
-  const names = extractIcuPlaceholderNames(text).sort();
-  const counts = names.join('|');
+interface PlaceholderSignature {
+  /** Placeholder names in extraction order. */
+  ordered: string[];
+  /** Frequency map — how many times each name appears. */
+  counts: Map<string, number>;
+  /** Sorted type signature string for each unique name. */
+  types: string;
+}
+
+function buildPlaceholderSignature(source: SourceKey, text: string): PlaceholderSignature {
+  const matches = extractIcuPlaceholderMatches(text);
+  const ordered = matches.map((m) => m.name);
+
+  const counts = new Map<string, number>();
+  for (const name of ordered) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
   const typeLookup = new Map(
     Object.entries(source.placeholders).map(([name, placeholder]) => [name, placeholder.type]),
   );
-  const typeSignature = [...new Set(names)]
+  const types = [...counts.keys()]
     .sort()
     .map((name) => `${name}:${typeLookup.get(name) ?? 'string'}`)
     .join('|');
 
-  return {
-    counts,
-    types: typeSignature,
-  };
+  return { counts, ordered, types };
+}
+
+function areMapsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const [key, value] of a) {
+    if (b.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function hasPlaceholderParity(source: SourceKey, targetText: string): boolean {
-  const sourceSignature = buildPlaceholderSignature(source, source.text);
-  const targetSignature = buildPlaceholderSignature(source, targetText);
-  return sourceSignature.counts === targetSignature.counts && sourceSignature.types === targetSignature.types;
+  const sourceSig = buildPlaceholderSignature(source, source.text);
+  const targetSig = buildPlaceholderSignature(source, targetText);
+
+  // 1. Total placeholder count must match.
+  if (sourceSig.ordered.length !== targetSig.ordered.length) {
+    return false;
+  }
+
+  // 2. Multiset equality — each name must appear the same number of times.
+  if (!areMapsEqual(sourceSig.counts, targetSig.counts)) {
+    return false;
+  }
+
+  // 3. Type signature must match.
+  if (sourceSig.types !== targetSig.types) {
+    return false;
+  }
+
+  // 4. Positional ordering for digit-named placeholders ({0}, {1}, …).
+  //    Named ICU placeholders like {count} or {user} may be reordered
+  //    across languages for grammatical reasons, so we only enforce ordering
+  //    for purely numeric names which are inherently positional.
+  const sourcePositional = sourceSig.ordered.filter((name) => /^\d+$/u.test(name));
+  const targetPositional = targetSig.ordered.filter((name) => /^\d+$/u.test(name));
+  if (sourcePositional.join('|') !== targetPositional.join('|')) {
+    return false;
+  }
+
+  return true;
 }
 
 function createInternalInvariantError(summary: string, details: Record<string, string> = {}): L10nError {
@@ -165,9 +215,15 @@ function findCacheEntry(
   cache: CacheFile['entries'],
   sourceHash: string,
   locale: string,
+  configHash: string,
 ): SyncTask['cacheHit'] {
   const matchingEntries = cache
-    .filter((entry) => entry.source_hash === sourceHash && entry.locale === locale)
+    .filter(
+      (entry) =>
+        entry.source_hash === sourceHash &&
+        entry.locale === locale &&
+        entry.config_hash === configHash,
+    )
     .map((entry) => ({
       cachedAt: entry.cached_at,
       modelVersion: entry.model_version,
@@ -300,6 +356,7 @@ export function buildSyncPlan(
   const sourceKeySet = new Set(sourceKeys);
   const canonicalSource = buildCanonicalKeySetFromSource(snapshot.source.value);
   const cacheEntries = snapshot.cache.value?.entries ?? [];
+  const configHash = computeProviderCacheKeyHash(snapshot.config);
   const translationByLocale = new Map(snapshot.translations.map((translation) => [translation.locale, translation]));
 
   const locales = selectedLocales.map((locale): LocaleSyncPlan => {
@@ -321,7 +378,7 @@ export function buildSyncPlan(
 
       if (!entry || entry.text.trim().length === 0) {
         missing += 1;
-        const cacheHit = findCacheEntry(cacheEntries, sourceHash, locale);
+        const cacheHit = findCacheEntry(cacheEntries, sourceHash, locale, configHash);
         if (cacheHit) {
           cacheHits += 1;
         }
@@ -345,7 +402,7 @@ export function buildSyncPlan(
         }
 
         staleRetranslations += 1;
-        const cacheHit = findCacheEntry(cacheEntries, sourceHash, locale);
+        const cacheHit = findCacheEntry(cacheEntries, sourceHash, locale, configHash);
         if (cacheHit) {
           cacheHits += 1;
         }
@@ -764,6 +821,7 @@ export async function runSync(
   }
 
   const cacheEntries = structuredClone(snapshot.cache.value?.entries ?? []);
+  const configHash = computeProviderCacheKeyHash(snapshot.config);
   let completedTranslations = 0;
   let translated = 0;
   let cacheHits = 0;
@@ -975,6 +1033,7 @@ export async function runSync(
           cacheEntries.length,
           ...upsertCacheEntry(cacheEntries, {
             cached_at: timestamp,
+            config_hash: configHash,
             locale: task.locale,
             model_version: result.modelVersion,
             source_hash: task.sourceHash,
