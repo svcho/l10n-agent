@@ -33,6 +33,45 @@ export function resolveManagedSnapshotPath(l10nDir: string, historyId: string): 
   return resolve(l10nDir, '.snapshots', `${historyId}.json`);
 }
 
+async function loadManagedSnapshot(l10nDir: string, historyId: string): Promise<ManagedFileSnapshot> {
+  const snapshotPath = resolveManagedSnapshotPath(l10nDir, historyId);
+  let snapshot: unknown;
+
+  try {
+    snapshot = await readJsonFile(snapshotPath);
+  } catch {
+    throw new L10nError({
+      code: 'L10N_E0062',
+      details: { history_id: historyId, path: snapshotPath },
+      level: 'error',
+      next: 'Choose a history entry created by this version of l10n-agent, or restore files from git.',
+      summary: 'Rollback snapshot could not be loaded',
+    });
+  }
+
+  if (
+    !snapshot ||
+    typeof snapshot !== 'object' ||
+    Array.isArray(snapshot) ||
+    !('version' in snapshot) ||
+    snapshot.version !== 1 ||
+    !('files' in snapshot) ||
+    !snapshot.files ||
+    typeof snapshot.files !== 'object' ||
+    Array.isArray(snapshot.files)
+  ) {
+    throw new L10nError({
+      code: 'L10N_E0062',
+      details: { history_id: historyId, path: snapshotPath },
+      level: 'error',
+      next: 'Delete the malformed snapshot and restore the repo from git if needed.',
+      summary: 'Rollback snapshot has an invalid shape',
+    });
+  }
+
+  return snapshot as ManagedFileSnapshot;
+}
+
 export function getManagedFilePaths(snapshot: ProjectSnapshot): string[] {
   const filePaths = new Set<string>([
     snapshot.source.path,
@@ -107,39 +146,7 @@ export async function restoreManagedFiles(
   historyId: string,
 ): Promise<void> {
   const snapshotPath = resolveManagedSnapshotPath(l10nDir, historyId);
-  let snapshot: unknown;
-
-  try {
-    snapshot = await readJsonFile(snapshotPath);
-  } catch {
-    throw new L10nError({
-      code: 'L10N_E0062',
-      details: { history_id: historyId, path: snapshotPath },
-      level: 'error',
-      next: 'Choose a history entry created by this version of l10n-agent, or restore files from git.',
-      summary: 'Rollback snapshot could not be loaded',
-    });
-  }
-
-  if (
-    !snapshot ||
-    typeof snapshot !== 'object' ||
-    Array.isArray(snapshot) ||
-    !('version' in snapshot) ||
-    snapshot.version !== 1 ||
-    !('files' in snapshot) ||
-    !snapshot.files ||
-    typeof snapshot.files !== 'object' ||
-    Array.isArray(snapshot.files)
-  ) {
-    throw new L10nError({
-      code: 'L10N_E0062',
-      details: { history_id: historyId, path: snapshotPath },
-      level: 'error',
-      next: 'Delete the malformed snapshot and restore the repo from git if needed.',
-      summary: 'Rollback snapshot has an invalid shape',
-    });
-  }
+  const snapshot = await loadManagedSnapshot(l10nDir, historyId);
 
   for (const [relativePath, content] of Object.entries(snapshot.files as Record<string, unknown>).sort(([left], [right]) =>
     left.localeCompare(right),
@@ -162,6 +169,18 @@ export async function restoreManagedFiles(
 
     await writeTextFileAtomic(absolutePath, content);
   }
+}
+
+export async function getSnapshotTrackedFilePaths(
+  rootDir: string,
+  l10nDir: string,
+  historyId: string,
+): Promise<string[]> {
+  const snapshot = await loadManagedSnapshot(l10nDir, historyId);
+
+  return Object.keys(snapshot.files)
+    .map((relativePath) => resolve(rootDir, relativePath))
+    .sort();
 }
 
 export async function writeSourceFile(path: string, source: SourceFile): Promise<void> {

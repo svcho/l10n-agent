@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import { L10nError } from '../errors/l10n-error.js';
 import { writeTextFileAtomic } from '../utils/fs.js';
 import type {
+  KeyRenamePlan,
+  KeyRenameRequest,
   PreflightResult,
   SemanticDedupeGroup,
   SemanticDedupeRequest,
@@ -126,6 +128,33 @@ function buildSemanticDedupePrompt(request: SemanticDedupeRequest): string {
       [
         `- key: ${candidate.key}`,
         `  text: ${candidate.text}`,
+        ...(candidate.description ? [`  description: ${candidate.description}`] : []),
+      ].join('\n'),
+    ),
+  ];
+
+  return lines.join('\n');
+}
+
+function buildKeyRenamePrompt(request: KeyRenameRequest): string {
+  const lines = [
+    'Repair invalid canonical localization keys for a mobile app repository.',
+    'Return JSON only.',
+    'Preserve the semantic meaning of each key based on the key name, source text, and description.',
+    'Only suggest a rename when you can make the key comply with every configured rule.',
+    'If a safe rename is unclear, return a skip_reason instead of guessing.',
+    'Destination keys must be unique within the batch.',
+    `Source locale: ${request.sourceLocale}`,
+    `Required case style: ${request.keyCase}`,
+    `Maximum key depth: ${request.maxDepth}`,
+    `Allowed scopes: ${request.scopes.length > 0 ? request.scopes.join(', ') : 'any'}`,
+    `Forbidden prefixes: ${request.forbiddenPrefixes.length > 0 ? request.forbiddenPrefixes.join(', ') : 'none'}`,
+    'Candidates:',
+    ...request.candidates.map((candidate) =>
+      [
+        `- key: ${candidate.key}`,
+        `  text: ${candidate.text}`,
+        `  violations: ${candidate.violations.join(', ')}`,
         ...(candidate.description ? [`  description: ${candidate.description}`] : []),
       ].join('\n'),
     ),
@@ -502,6 +531,67 @@ export class CodexLocalProvider implements TranslationProvider {
     return {
       groups,
       modelVersion: this.getModelVersion(),
+    };
+  }
+
+  async planKeyRenames(
+    input: KeyRenameRequest,
+  ): Promise<{ modelVersion: string; plans: KeyRenamePlan[] }> {
+    const parsed = await this.runStructuredPrompt<{ plans: Array<{
+      from: string;
+      rationale?: string;
+      skip_reason?: string;
+      to?: string;
+    }> }>(
+      'key-rename-output.schema.json',
+      {
+        additionalProperties: false,
+        properties: {
+          plans: {
+            items: {
+              additionalProperties: false,
+              properties: {
+                from: { type: 'string' },
+                rationale: { type: 'string' },
+                skip_reason: { type: 'string' },
+                to: { type: 'string' },
+              },
+              required: ['from'],
+              type: 'object',
+            },
+            type: 'array',
+          },
+        },
+        required: ['plans'],
+        type: 'object',
+      },
+      buildKeyRenamePrompt(input),
+      undefined,
+    );
+
+    const knownKeys = new Set(input.candidates.map((candidate) => candidate.key));
+    const plans: KeyRenamePlan[] = [];
+
+    for (const plan of parsed.plans ?? []) {
+      if (!plan || typeof plan !== 'object' || typeof plan.from !== 'string' || !knownKeys.has(plan.from)) {
+        continue;
+      }
+
+      plans.push({
+        from: plan.from,
+        ...(typeof plan.rationale === 'string' && plan.rationale.trim().length > 0
+          ? { rationale: plan.rationale.trim() }
+          : {}),
+        ...(typeof plan.skip_reason === 'string' && plan.skip_reason.trim().length > 0
+          ? { skip_reason: plan.skip_reason.trim() }
+          : {}),
+        ...(typeof plan.to === 'string' && plan.to.trim().length > 0 ? { to: plan.to.trim() } : {}),
+      });
+    }
+
+    return {
+      modelVersion: this.getModelVersion(),
+      plans,
     };
   }
 

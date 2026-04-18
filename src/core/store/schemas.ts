@@ -89,6 +89,19 @@ export const HistoryEntrySchema = z.discriminatedUnion('op', [
   }),
   z.object({
     actor: z.string(),
+    files_updated: z.number().int().min(0),
+    id: z.string(),
+    op: z.literal('lint_fix'),
+    renames: z.array(
+      z.object({
+        after: z.string(),
+        before: z.string(),
+      }),
+    ),
+    ts: z.string().datetime(),
+  }),
+  z.object({
+    actor: z.string(),
     id: z.string(),
     key: z.string(),
     op: z.literal('delete'),

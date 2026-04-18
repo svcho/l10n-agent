@@ -66,6 +66,22 @@ export function createRenameHistoryEntry(
   };
 }
 
+export function createLintFixHistoryEntry(
+  id: string,
+  timestamp: string,
+  renames: Array<{ after: string; before: string }>,
+  filesUpdated: number,
+): HistoryEntry {
+  return {
+    actor: getActor(),
+    files_updated: filesUpdated,
+    id,
+    op: 'lint_fix',
+    renames,
+    ts: timestamp,
+  };
+}
+
 export function createRollbackHistoryEntry(id: string, timestamp: string, to: string): HistoryEntry {
   return {
     actor: getActor(),

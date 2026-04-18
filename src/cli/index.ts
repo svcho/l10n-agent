@@ -11,6 +11,7 @@ import { buildDoctorReport } from '../core/doctor.js';
 import { lintGlossary } from '../core/glossary.js';
 import { runImport } from '../core/import.js';
 import { runInit } from '../core/init.js';
+import { collectLintFixCandidates, runLintFix } from '../core/lint.js';
 import { lintSourceKeys } from '../core/linter/lint-keys.js';
 import { runRepair } from '../core/repair.js';
 import { runRename } from '../core/rename.js';
@@ -162,25 +163,70 @@ program
 program
   .command('lint')
   .description('Validate canonical key names and source-level constraints.')
+  .option('--fix', 'auto-rename invalid canonical keys and rewrite exact key references in repo text files', false)
   .option('--glossary', 'validate persisted translations against configured glossary terms', false)
   .action(async function lintAction(this: Command) {
     await runAction(this, async (options) => {
       const snapshot = await loadProjectSnapshot(options.cwd, options.config);
-      const commandOptions = this.opts<{ glossary: boolean }>();
+      const commandOptions = this.opts<{ fix: boolean; glossary: boolean }>();
       const diagnostics = [
         ...lintSourceKeys(snapshot.config, snapshot.source.value),
         ...(commandOptions.glossary ? lintGlossary(snapshot) : []),
       ];
-      const report = {
-        diagnostics,
-        ok: diagnostics.length === 0,
-        summary: {
-          key_count: Object.keys(snapshot.source.value.keys).length,
-        },
-      };
+      const candidates = collectLintFixCandidates(snapshot, diagnostics);
+      const report = commandOptions.fix
+        ? candidates.length === 0
+          ? {
+              diagnostics,
+              fixed_renames: [],
+              ok: diagnostics.length === 0,
+              summary: {
+                fixed_keys: 0,
+                key_count: Object.keys(snapshot.source.value.keys).length,
+                reference_files_touched: 0,
+                reference_replacements: 0,
+              },
+            }
+          : await (async () => {
+              const provider = createProvider(
+                options,
+                snapshot.config.provider.codex_min_version,
+                snapshot.config.provider.model,
+              );
+              const preflight = await provider.preflight();
+              if (!preflight.ok) {
+                throw new L10nError({
+                  code: preflight.code ?? 'L10N_E0054',
+                  details: preflight.detectedVersion
+                    ? { detected_version: preflight.detectedVersion }
+                    : {},
+                  level: 'error',
+                  next: preflight.message ?? 'Re-run the command after fixing the provider environment.',
+                  summary: 'Provider preflight failed',
+                });
+              }
+
+              return runLintFix(snapshot, {
+                glossary: commandOptions.glossary,
+                provider: {
+                  planKeyRenames: provider.planKeyRenames.bind(provider),
+                },
+              });
+            })()
+        : {
+            diagnostics,
+            fixed_renames: [],
+            ok: diagnostics.length === 0,
+            summary: {
+              fixed_keys: 0,
+              key_count: Object.keys(snapshot.source.value.keys).length,
+              reference_files_touched: 0,
+              reference_replacements: 0,
+            },
+          };
 
       printDiagnosticsReport(report, options);
-      return diagnostics.length === 0 ? 0 : 1;
+      return report.ok ? 0 : 1;
     });
   });
 

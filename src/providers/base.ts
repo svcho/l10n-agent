@@ -1,3 +1,4 @@
+import type { KeyCase } from '../config/schema.js';
 import type { ICUPlaceholder } from '../core/placeholders/types.js';
 
 export interface TranslationRequest {
@@ -27,6 +28,29 @@ export interface SemanticDedupeRequest {
   sourceLocale: string;
 }
 
+export interface KeyRenameCandidate {
+  description?: string;
+  key: string;
+  text: string;
+  violations: string[];
+}
+
+export interface KeyRenameRequest {
+  candidates: KeyRenameCandidate[];
+  keyCase: KeyCase;
+  forbiddenPrefixes: string[];
+  maxDepth: number;
+  scopes: string[];
+  sourceLocale: string;
+}
+
+export interface KeyRenamePlan {
+  from: string;
+  rationale?: string;
+  skip_reason?: string;
+  to?: string;
+}
+
 export interface TranslationResult {
   modelVersion: string;
   text: string;
@@ -48,6 +72,9 @@ export interface TranslationProvider {
   findSemanticDuplicates?(
     input: SemanticDedupeRequest,
   ): Promise<{ groups: SemanticDedupeGroup[]; modelVersion: string }>;
+  planKeyRenames?(
+    input: KeyRenameRequest,
+  ): Promise<{ modelVersion: string; plans: KeyRenamePlan[] }>;
   preflight?(): Promise<PreflightResult>;
   translate(input: TranslationRequest): Promise<TranslationResult>;
 }

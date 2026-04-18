@@ -1,7 +1,8 @@
 import { L10nError } from '../errors/l10n-error.js';
 import { buildHistoryId, createRollbackHistoryEntry } from './history.js';
 import {
-  getManagedFilePaths,
+  getManagedFilePathsWithExtras,
+  getSnapshotTrackedFilePaths,
   restoreManagedFiles,
   snapshotManagedFiles,
 } from './project-files.js';
@@ -34,7 +35,13 @@ export async function runRollback(
 
   const timestamp = new Date().toISOString();
   const historyId = buildHistoryId(timestamp, 'rollback');
-  await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
+  const trackedPaths = await getSnapshotTrackedFilePaths(snapshot.rootDir, snapshot.l10nDir, options.to);
+  await snapshotManagedFiles(
+    snapshot.rootDir,
+    snapshot.l10nDir,
+    historyId,
+    getManagedFilePathsWithExtras(snapshot, trackedPaths),
+  );
   await restoreManagedFiles(snapshot.rootDir, snapshot.l10nDir, options.to);
   await appendHistoryEntries(snapshot.history.path, snapshot.history.value, [
     createRollbackHistoryEntry(historyId, timestamp, options.to),

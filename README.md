@@ -52,8 +52,8 @@ Plural ICU syntax is still out of scope. If source text contains plural syntax, 
   Scaffold `l10n/`, detect native localization files, preflight Codex, and optionally import existing strings.
 - `sync [--dry-run] [--strict] [--locale <locale>] [--continue]`
   Reconcile source, translations, cache, history, and native platform files. Reviewed stale entries are preserved and warned on. Removed locales are archived.
-- `lint [--glossary]`
-  Validate key naming rules and, with `--glossary`, verify persisted translations preserve configured glossary terms.
+- `lint [--glossary] [--fix]`
+  Validate key naming rules and, with `--glossary`, verify persisted translations preserve configured glossary terms. `--fix` uses the local Codex CLI to propose safe destination keys, applies the rename across managed localization files, and rewrites exact key-string references in supported repo code/config text files.
 - `check [--fast]`
   Deterministic CI gate for lint failures, missing translations, stale entries, orphaned keys, and platform drift.
 - `doctor`
@@ -73,9 +73,9 @@ Plural ICU syntax is still out of scope. If source text contains plural syntax, 
 
 - Node.js 20+
 - Git
-- Codex CLI installed and authenticated with `codex login` for `sync` and `dedupe`
+- Codex CLI installed and authenticated with `codex login` for `sync`, `dedupe`, and `lint --fix`
 
-Deterministic commands such as `lint`, `check`, `repair`, `rollback`, and `import` do not require live provider calls.
+Deterministic commands such as `lint`, `check`, `repair`, `rollback`, and `import` do not require live provider calls. The exception is `lint --fix`, which uses the local Codex CLI to propose destination keys before applying the rename.
 
 ## Install
 
@@ -446,7 +446,7 @@ This is common in partial migrations.
 Recommended order:
 
 1. Run `init` and import existing platform strings.
-2. Normalize keys in canonical source if needed with `rename`.
+2. Normalize keys in canonical source with `lint --fix` for batch-safe cleanup or `rename` when you want to control the exact destination key.
 3. Run `dedupe` to identify exact or semantic duplicate strings before wiring more code to them.
 4. Replace hard-coded code literals with lookups to the imported canonical keys.
 5. Keep future copy edits in `l10n/source.<locale>.json`, not directly in app code or native localization files.
@@ -458,7 +458,7 @@ Recommended approach:
 - use semantic, stable keys such as `onboarding.welcome.title`
 - avoid keys that mirror current English wording
 - keep the same key across platforms
-- use `rename` rather than manually editing keys in multiple files
+- use `lint --fix` for safe batch cleanup and `rename` when you want an explicit destination key
 
 Key style is enforced by config:
 
@@ -473,10 +473,11 @@ Android usually uses `snake_case` as a platform transform while canonical keys s
 
 1. Add or edit canonical source keys in `l10n/source.<locale>.json`
 2. Run `npm run dev -- lint`
-3. Run `npm run dev -- sync --dry-run`
-4. Run `npm run dev -- sync`
-5. Review generated diffs
-6. Run `npm run dev -- check`
+3. If key-style violations are straightforward, run `npm run dev -- lint --fix` to apply Codex-suggested renames and rewrite exact key-string references in supported repo code/config text files
+4. Run `npm run dev -- sync --dry-run`
+5. Run `npm run dev -- sync`
+6. Review generated diffs
+7. Run `npm run dev -- check`
 
 When changing locale configuration:
 

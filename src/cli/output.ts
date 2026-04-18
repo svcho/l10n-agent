@@ -48,6 +48,16 @@ export function printDiagnosticsReport(
     }
   }
 
+  if ('fixed_renames' in report && Array.isArray(report.fixed_renames) && report.fixed_renames.length > 0) {
+    process.stdout.write('\nApplied key renames:\n');
+    for (const rename of report.fixed_renames) {
+      process.stdout.write(`  ${rename.from} -> ${rename.to}\n`);
+      if (rename.rationale) {
+        process.stdout.write(`       rationale: ${rename.rationale}\n`);
+      }
+    }
+  }
+
   const statusText = report.ok ? colors.green('ok') : colors.red('failed');
   process.stdout.write(`\n${statusText}  ${JSON.stringify(report.summary)}\n`);
 }
