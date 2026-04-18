@@ -5,6 +5,7 @@ import { Chalk } from 'chalk';
 import type { Diagnostic } from '../core/diagnostics.js';
 import type { CheckReport } from '../core/check.js';
 import type { DoctorReport } from '../core/doctor.js';
+import type { SyncPlan, SyncReport } from '../core/sync.js';
 
 export interface OutputOptions {
   color: boolean;
@@ -60,6 +61,11 @@ export function printDoctorReport(report: DoctorReport, options: OutputOptions):
   process.stdout.write(
     `Cache entries: ${report.cache_entries}, history entries: ${report.history_entries}, last history: ${report.last_history_at ?? 'none'}\n`,
   );
+  process.stdout.write(
+    `Next sync estimate: ${report.estimated_requests.requests ?? 'unavailable'}${
+      report.estimated_requests.notes ? ` (${report.estimated_requests.notes})` : ''
+    }\n`,
+  );
   process.stdout.write('\nLocales:\n');
   for (const locale of report.locales) {
     const missingText = locale.missing > 0 ? colors.red(String(locale.missing)) : colors.green('0');
@@ -79,4 +85,62 @@ export function printDoctorReport(report: DoctorReport, options: OutputOptions):
       }${platform.version ? ` version=${platform.version}` : ''}\n`,
     );
   }
+}
+
+export function printSyncPlan(plan: SyncPlan, report: SyncReport, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ plan, report }, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write('Plan for sync:\n');
+  for (const locale of plan.locales) {
+    process.stdout.write(
+      `  ${locale.locale}: missing=${locale.missing} stale=${locale.stale_retranslations} reviewed_stale=${locale.reviewed_stale} removed=${locale.removed} cache_hits=${locale.cache_hits}\n`,
+    );
+  }
+  process.stdout.write(
+    `Estimated provider requests: ${report.summary.provider_requests}, platform writes ios=${plan.platform_writes.ios} android=${plan.platform_writes.android}\n`,
+  );
+  if (report.resumed_from) {
+    process.stdout.write(
+      `Resuming partial sync from ${report.resumed_from.started_at} - ${report.resumed_from.remaining_translations} translations remaining\n`,
+    );
+  }
+  for (const diagnostic of report.diagnostics) {
+    process.stdout.write(`${diagnostic.level}  ${diagnostic.code}  ${diagnostic.summary}\n`);
+  }
+}
+
+export function printSyncReport(report: SyncReport, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  const colors = createChalk(options.color);
+  if (report.resumed_from) {
+    process.stdout.write(
+      `Resuming partial sync from ${report.resumed_from.started_at} - ${report.resumed_from.remaining_translations} translations remaining\n`,
+    );
+  }
+
+  for (const diagnostic of report.diagnostics) {
+    const level =
+      diagnostic.level === 'error'
+        ? colors.red(diagnostic.level)
+        : diagnostic.level === 'warn'
+          ? colors.yellow(diagnostic.level)
+          : colors.blue(diagnostic.level);
+    process.stdout.write(`${level}  ${diagnostic.code}  ${diagnostic.summary}\n`);
+    for (const [key, value] of Object.entries(diagnostic.details ?? {})) {
+      process.stdout.write(`       ${key}: ${String(value)}\n`);
+    }
+    if (diagnostic.next) {
+      process.stdout.write(`       next: ${diagnostic.next}\n`);
+    }
+  }
+
+  const statusText = report.ok ? colors.green('ok') : colors.red('failed');
+  process.stdout.write(`\n${statusText}  ${JSON.stringify(report.summary)}\n`);
 }

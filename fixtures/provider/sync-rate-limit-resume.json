@@ -1,0 +1,16 @@
+{
+  "records": [
+    {
+      "request": {
+        "sourceLocale": "en",
+        "sourceText": "Notifications",
+        "targetLocale": "es"
+      },
+      "response": {
+        "exitCode": 0,
+        "stderr": "",
+        "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"fixture-rate-limit-resume-es\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"text\\\":\\\"Notificaciones\\\"}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":42,\"cached_input_tokens\":0,\"output_tokens\":12}}\n"
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "records": [
+    {
+      "request": {
+        "sourceLocale": "en",
+        "sourceText": "Hello, {name}",
+        "targetLocale": "de"
+      },
+      "response": {
+        "exitCode": 0,
+        "stderr": "",
+        "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"fixture-placeholder-de\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"text\\\":\\\"Hallo\\\"}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":42,\"cached_input_tokens\":0,\"output_tokens\":12}}\n"
+      }
+    },
+    {
+      "request": {
+        "sourceLocale": "en",
+        "sourceText": "Hello, {name}",
+        "targetLocale": "es"
+      },
+      "response": {
+        "exitCode": 0,
+        "stderr": "",
+        "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"fixture-placeholder-es\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"text\\\":\\\"Hola, {name}\\\"}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":42,\"cached_input_tokens\":0,\"output_tokens\":12}}\n"
+      }
+    }
+  ]
+}

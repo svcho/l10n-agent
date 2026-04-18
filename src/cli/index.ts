@@ -9,9 +9,10 @@ import type { Diagnostic } from '../core/diagnostics.js';
 import { buildDoctorReport } from '../core/doctor.js';
 import { lintSourceKeys } from '../core/linter/lint-keys.js';
 import { loadProjectSnapshot } from '../core/store/load.js';
+import { buildSyncPlan, runSync } from '../core/sync.js';
 import { L10nError } from '../errors/l10n-error.js';
-import { codexPreflight } from '../providers/codex-local.js';
-import { printDiagnosticsReport, printDoctorReport } from './output.js';
+import { CodexLocalProvider, codexPreflight } from '../providers/codex-local.js';
+import { printDiagnosticsReport, printDoctorReport, printSyncPlan, printSyncReport } from './output.js';
 
 interface GlobalOptions {
   color: boolean;
@@ -60,6 +61,18 @@ function printFatalError(error: unknown, options: Pick<GlobalOptions, 'json' | '
   process.stderr.write('Unknown failure\n');
 }
 
+function getExitCodeForError(error: unknown): number {
+  if (error instanceof L10nError) {
+    if (['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)) {
+      return 3;
+    }
+
+    return 1;
+  }
+
+  return 1;
+}
+
 async function runAction(command: Command, action: (options: GlobalOptions) => Promise<number>): Promise<void> {
   const options = getGlobalOptions(command);
 
@@ -67,8 +80,16 @@ async function runAction(command: Command, action: (options: GlobalOptions) => P
     process.exitCode = await action(options);
   } catch (error) {
     printFatalError(error, options);
-    process.exitCode = 1;
+    process.exitCode = getExitCodeForError(error);
   }
+}
+
+function createProvider(options: GlobalOptions, minimumVersion: string, model?: string): CodexLocalProvider {
+  return new CodexLocalProvider({
+    cwd: options.cwd,
+    minimumVersion,
+    ...(model ? { model } : {}),
+  });
 }
 
 const program = new Command();
@@ -120,11 +141,57 @@ program
   .action(async function doctorAction(this: Command) {
     await runAction(this, async (options) => {
       const snapshot = await loadProjectSnapshot(options.cwd, options.config);
-      const report = await buildDoctorReport(snapshot, () =>
-        codexPreflight(snapshot.config.provider.codex_min_version),
+      const provider = createProvider(
+        options,
+        snapshot.config.provider.codex_min_version,
+        snapshot.config.provider.model,
+      );
+      const report = await buildDoctorReport(
+        snapshot,
+        () => codexPreflight(snapshot.config.provider.codex_min_version),
+        provider.estimateRequests.bind(provider),
       );
       printDoctorReport(report, options);
       return 0;
+    });
+  });
+
+program
+  .command('sync')
+  .description('Reconcile source, translations, cache, and platform files.')
+  .option('--continue', 'resume only if a partial sync state exists', false)
+  .option('--dry-run', 'compute the sync plan without writing files or calling the provider', false)
+  .option('--locale <locale>', 'limit sync to one locale', (value, previous: string[] = []) => [...previous, value], [])
+  .option('--strict', 'abort the run when a placeholder mismatch is detected', false)
+  .action(async function syncAction(this: Command) {
+    await runAction(this, async (options) => {
+      const commandOptions = this.opts<{
+        continue: boolean;
+        dryRun: boolean;
+        locale: string[];
+        strict: boolean;
+      }>();
+      const snapshot = await loadProjectSnapshot(options.cwd, options.config);
+      const provider = createProvider(
+        options,
+        snapshot.config.provider.codex_min_version,
+        snapshot.config.provider.model,
+      );
+      const report = await runSync(snapshot, {
+        continueOnly: commandOptions.continue,
+        dryRun: commandOptions.dryRun,
+        locales: commandOptions.locale,
+        provider,
+        strict: commandOptions.strict,
+      });
+
+      if (commandOptions.dryRun) {
+        printSyncPlan(buildSyncPlan(snapshot, { locales: commandOptions.locale }), report, options);
+      } else {
+        printSyncReport(report, options);
+      }
+
+      return report.ok ? 0 : 1;
     });
   });
 

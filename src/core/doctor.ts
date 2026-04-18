@@ -1,6 +1,8 @@
 import { AndroidStringsAdapter } from '../adapters/android/strings.js';
 import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
+import type { TranslationRequest } from '../providers/base.js';
 import type { CodexPreflightResult } from '../providers/codex-local.js';
+import { buildSyncPlan } from './sync.js';
 import type { ProjectSnapshot } from './store/load.js';
 
 export interface DoctorLocaleReport {
@@ -16,6 +18,10 @@ export interface DoctorLocaleReport {
 export interface DoctorReport {
   cache_entries: number;
   codex: CodexPreflightResult;
+  estimated_requests: {
+    notes: string | null;
+    requests: number | null;
+  };
   history_entries: number;
   last_history_at: string | null;
   locales: DoctorLocaleReport[];
@@ -33,9 +39,21 @@ export interface DoctorReport {
 export async function buildDoctorReport(
   snapshot: ProjectSnapshot,
   preflight: () => Promise<CodexPreflightResult>,
+  estimateRequests?: (
+    inputs: TranslationRequest[],
+  ) => Promise<{ notes?: string; requests: number }>,
 ): Promise<DoctorReport> {
   const sourceKeys = Object.keys(snapshot.source.value.keys);
   const sourceKeySet = new Set(sourceKeys);
+  const plan = buildSyncPlan(snapshot);
+  const codex = await preflight();
+  const pendingInputs = plan.locales.flatMap((locale) =>
+    locale.pending_tasks.filter((task) => task.cacheHit === null).map((task) => task.request),
+  );
+  const estimatedRequests =
+    estimateRequests && codex.loginStatus === 'logged-in' && codex.meetsMinimumVersion
+      ? await estimateRequests(pendingInputs)
+      : null;
 
   const locales = snapshot.translations.map((translation): DoctorLocaleReport => {
     if (!translation.exists || !translation.value) {
@@ -114,7 +132,11 @@ export async function buildDoctorReport(
 
   return {
     cache_entries: snapshot.cache.value ? Object.keys(snapshot.cache.value.entries).length : 0,
-    codex: await preflight(),
+    codex,
+    estimated_requests: {
+      notes: estimatedRequests?.notes ?? null,
+      requests: estimatedRequests?.requests ?? null,
+    },
     history_entries: historyEntries.length,
     last_history_at: lastHistoryAt,
     locales,

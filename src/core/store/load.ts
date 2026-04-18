@@ -11,10 +11,12 @@ import {
   CacheFileSchema,
   HistoryEntrySchema,
   SourceFileSchema,
+  SyncStateFileSchema,
   TranslationFileSchema,
   type CacheFile,
   type HistoryEntry,
   type SourceFile,
+  type SyncStateFile,
   type TranslationFile,
 } from './schemas.js';
 
@@ -41,6 +43,7 @@ export interface ProjectSnapshot {
     path: string;
     value: SourceFile;
   };
+  state: LoadedOptionalFile<SyncStateFile>;
   translations: LoadedTranslationFile[];
 }
 
@@ -216,6 +219,12 @@ export async function loadProjectSnapshot(
     'Cache file could not be loaded',
   );
   const history = await loadOptionalHistory(resolve(l10nDir, '.history.jsonl'));
+  const state = await loadOptionalJsonWithSchema(
+    resolve(l10nDir, '.state.json'),
+    SyncStateFileSchema,
+    'L10N_E0069',
+    'Sync state file could not be loaded',
+  );
 
   return {
     cache,
@@ -233,6 +242,7 @@ export async function loadProjectSnapshot(
       path: sourcePath,
       value: sourceValue,
     },
+    state,
     translations,
   };
 }

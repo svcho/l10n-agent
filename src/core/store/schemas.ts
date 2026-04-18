@@ -45,6 +45,17 @@ export const CacheFileSchema = z.object({
   version: z.literal(1),
 });
 
+export const SyncStateFileSchema = z.object({
+  batch_index: z.number().int().min(0),
+  completed_translations: z.number().int().min(0),
+  last_processed_key: z.string().min(1).optional(),
+  last_processed_locale: LocaleCode.optional(),
+  started_at: z.string().datetime(),
+  total_translations: z.number().int().min(0),
+  updated_at: z.string().datetime(),
+  version: z.literal(1),
+});
+
 export const HistoryEntrySchema = z.discriminatedUnion('op', [
   z.object({
     actor: z.string(),
@@ -99,5 +110,6 @@ export type LocaleCode = z.infer<typeof LocaleCode>;
 export type Placeholder = z.infer<typeof PlaceholderSchema>;
 export type SourceFile = z.infer<typeof SourceFileSchema>;
 export type SourceKey = z.infer<typeof SourceKeySchema>;
+export type SyncStateFile = z.infer<typeof SyncStateFileSchema>;
 export type TranslationEntry = z.infer<typeof TranslationEntrySchema>;
 export type TranslationFile = z.infer<typeof TranslationFileSchema>;

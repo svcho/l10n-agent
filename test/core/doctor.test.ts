@@ -11,10 +11,17 @@ describe('buildDoctorReport', () => {
       loginStatus: 'logged-in',
       meetsMinimumVersion: true,
       minimumVersion: '0.30.0',
+    }), async () => ({
+      notes: 'stubbed',
+      requests: 0,
     }));
 
     expect(report.source_keys).toBe(2);
     expect(report.cache_entries).toBe(1);
+    expect(report.estimated_requests).toEqual({
+      notes: 'stubbed',
+      requests: 0,
+    });
     expect(report.history_entries).toBe(1);
     expect(report.locales).toEqual([
       {

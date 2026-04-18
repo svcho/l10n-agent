@@ -530,15 +530,13 @@ export class IosXcstringsAdapter implements Adapter {
     }
 
     for (const [platformKey, entry] of Object.entries(catalog.strings)) {
-      if (!nextKeys.has(platformKey)) {
-        continue;
+      if (!nextKeys.has(platformKey) && entry.localizations) {
+        delete entry.localizations[locale];
       }
 
-      if (!entry.localizations || Object.keys(entry.localizations).length > 0) {
-        continue;
+      if (!entry.localizations || Object.keys(entry.localizations).length === 0) {
+        delete catalog.strings[platformKey];
       }
-
-      delete catalog.strings[platformKey];
     }
 
     await writeJsonFileAtomic(path, catalog);
