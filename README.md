@@ -4,6 +4,8 @@
 
 `l10n-agent` is a local-first CLI for iOS and Android localization workflows. It keeps a canonical JSON source of truth under `l10n/`, syncs native platform files, translates missing strings through a local Codex CLI session, preserves reviewed edits, enforces key style rules, and helps clean up duplicate or conflicted localization state without introducing a hosted backend.
 
+Release history for the implemented CLI is tracked in `CHANGELOG.md`. `PRD.md` remains in the repo as historical planning context, but `README.md` and `AGENTS.md` are the authoritative docs for the current implementation.
+
 ## What this project is for
 
 `l10n-agent` is aimed at solo developers and small teams shipping native iOS and Android apps who want:

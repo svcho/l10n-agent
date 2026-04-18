@@ -169,7 +169,7 @@ For partially localized or unlocalized apps, the intended migration order is:
 
 ## Release readiness and docs policy
 
-- `README.md` and `AGENTS.md` should be sufficient project context if `PRD.md` is deleted
+- `README.md`, `AGENTS.md`, and `CHANGELOG.md` should be sufficient project context if `PRD.md` is deleted
 - public docs must describe the actual implemented command surface, not milestone placeholders
 - if behavior changes, update docs and integration tests in the same change
 - keep repo publish-safe: never commit credentials, `.env*`, private keys, auth dumps, or sensitive recorded model output
