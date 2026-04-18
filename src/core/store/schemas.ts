@@ -60,7 +60,22 @@ export const HistoryEntrySchema = z.discriminatedUnion('op', [
   z.object({
     actor: z.string(),
     id: z.string(),
+    op: z.literal('init'),
+    summary: z.string(),
+    ts: z.string().datetime(),
+  }),
+  z.object({
+    actor: z.string(),
+    id: z.string(),
     op: z.literal('sync'),
+    summary: z.string(),
+    ts: z.string().datetime(),
+  }),
+  z.object({
+    actor: z.string(),
+    from: z.string(),
+    id: z.string(),
+    op: z.literal('import'),
     summary: z.string(),
     ts: z.string().datetime(),
   }),

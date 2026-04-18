@@ -1,22 +1,20 @@
-import { userInfo } from 'node:os';
-
-import {
-  buildCanonicalKeySetFromSource,
-  buildCanonicalKeySetFromTranslation,
-  type ExtendedCanonicalKeySet,
-} from '../adapters/canonical.js';
-import { AndroidStringsAdapter } from '../adapters/android/strings.js';
-import { IosXcstringsAdapter } from '../adapters/ios/xcstrings.js';
+import { buildCanonicalKeySetFromSource, type ExtendedCanonicalKeySet } from '../adapters/canonical.js';
 import { L10nError } from '../errors/l10n-error.js';
 import type { TranslationProvider, TranslationRequest } from '../providers/base.js';
 import type { Diagnostic } from './diagnostics.js';
 import { hasErrorDiagnostics } from './diagnostics.js';
+import { buildHistoryId, createSyncHistoryEntry } from './history.js';
 import { extractIcuPlaceholderNames } from './placeholders/icu.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
+import {
+  getManagedFilePaths,
+  snapshotManagedFiles,
+  writeProjectFiles,
+  type TranslationLocaleState,
+} from './project-files.js';
 import type { ProjectSnapshot } from './store/load.js';
 import type {
   CacheFile,
-  HistoryEntry,
   SourceKey,
   SyncStateFile,
   TranslationEntry,
@@ -93,33 +91,8 @@ export interface SyncOptions {
   strict?: boolean;
 }
 
-interface MutableLocaleState {
+interface MutableLocaleState extends TranslationLocaleState {
   dirty: boolean;
-  entries: Record<string, TranslationEntry>;
-  locale: string;
-  path: string;
-}
-
-function getActor(): string {
-  try {
-    return userInfo().username;
-  } catch {
-    return process.env.USER ?? 'unknown';
-  }
-}
-
-function buildHistoryId(timestamp: string, suffix: string): string {
-  return `${timestamp.replaceAll(/[-:.TZ]/g, '').slice(0, 14)}-${suffix}`;
-}
-
-function createSyncHistoryEntry(timestamp: string, summary: string): HistoryEntry {
-  return {
-    actor: getActor(),
-    id: buildHistoryId(timestamp, 'sync'),
-    op: 'sync',
-    summary,
-    ts: timestamp,
-  };
 }
 
 function buildPlaceholderSignature(source: SourceKey, text: string): { counts: string; types: string } {
@@ -369,81 +342,6 @@ async function persistLocaleState(
   localeState.dirty = false;
 }
 
-async function writePlatforms(
-  snapshot: ProjectSnapshot,
-  localeStates: Map<string, MutableLocaleState>,
-  selectedLocales: string[],
-): Promise<void> {
-  const sourceCanonical = buildCanonicalKeySetFromSource(snapshot.source.value);
-  const selectedLocaleSet = new Set(selectedLocales);
-
-  if (snapshot.platformPaths.ios && snapshot.config.platforms.ios) {
-    const adapter = new IosXcstringsAdapter({
-      keyTransform: snapshot.config.platforms.ios.key_transform,
-      sourceLocale: snapshot.config.source_locale,
-    });
-
-    await adapter.write(snapshot.platformPaths.ios, sourceCanonical, snapshot.config.source_locale);
-
-    for (const translation of snapshot.translations) {
-      if (!selectedLocaleSet.has(translation.locale)) {
-        continue;
-      }
-
-      const localeState = localeStates.get(translation.locale);
-      if (!localeState) {
-        continue;
-      }
-
-      await adapter.write(
-        snapshot.platformPaths.ios,
-        buildCanonicalKeySetFromTranslation(
-          {
-            entries: localeState.entries,
-            locale: translation.locale,
-            version: 1,
-          },
-          snapshot.source.value,
-        ),
-        translation.locale,
-      );
-    }
-  }
-
-  if (snapshot.platformPaths.android && snapshot.config.platforms.android) {
-    const adapter = new AndroidStringsAdapter({
-      keyTransform: snapshot.config.platforms.android.key_transform,
-      sourceLocale: snapshot.config.source_locale,
-    });
-
-    await adapter.write(snapshot.platformPaths.android, sourceCanonical, snapshot.config.source_locale);
-
-    for (const translation of snapshot.translations) {
-      if (!selectedLocaleSet.has(translation.locale)) {
-        continue;
-      }
-
-      const localeState = localeStates.get(translation.locale);
-      if (!localeState) {
-        continue;
-      }
-
-      await adapter.write(
-        snapshot.platformPaths.android,
-        buildCanonicalKeySetFromTranslation(
-          {
-            entries: localeState.entries,
-            locale: translation.locale,
-            version: 1,
-          },
-          snapshot.source.value,
-        ),
-        translation.locale,
-      );
-    }
-  }
-}
-
 export async function runSync(
   snapshot: ProjectSnapshot,
   options: SyncOptions = {},
@@ -546,6 +444,9 @@ export async function runSync(
   let cacheHits = 0;
   let lastCompletedTask: Pick<SyncTask, 'key' | 'locale'> | null = null;
   const historyEntries = [...(snapshot.history.value ?? [])];
+  const historyTimestamp = new Date().toISOString();
+  const historyId = buildHistoryId(historyTimestamp, 'sync');
+  await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
 
   for (const localePlan of plan.locales) {
     const localeState = localeStates.get(localePlan.locale);
@@ -616,6 +517,7 @@ export async function runSync(
           await writeSyncState(snapshot.state.path, state);
           await appendHistoryEntries(snapshot.history.path, historyEntries, [
             createSyncHistoryEntry(
+              historyId,
               timestamp,
               `${completedTranslations} of ${plan.total_pending_tasks} translations completed before ${error.diagnostic.code}`,
             ),
@@ -691,13 +593,15 @@ export async function runSync(
     await persistLocaleState(localeState);
   }
 
-  await writeCacheFile(snapshot.cache.path, cacheEntries);
-  await writePlatforms(snapshot, localeStates, selectedLocales);
-  await removeFileIfExists(snapshot.state.path);
+  await writeProjectFiles(snapshot, snapshot.source.value, [...localeStates.values()], {
+    cacheEntries,
+    removeState: true,
+  });
 
   const timestamp = new Date().toISOString();
   await appendHistoryEntries(snapshot.history.path, historyEntries, [
     createSyncHistoryEntry(
+      historyId,
       timestamp,
       `${translated} translations generated, ${cacheHits} cache hits, ${plan.review_skips} reviewed skipped, ${plan.total_removed} removed`,
     ),

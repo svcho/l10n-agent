@@ -1,0 +1,77 @@
+import { userInfo } from 'node:os';
+
+import type { HistoryEntry } from './store/schemas.js';
+
+export function getActor(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return process.env.USER ?? 'unknown';
+  }
+}
+
+export function buildHistoryId(timestamp: string, suffix: string): string {
+  return `${timestamp.replaceAll(/[-:.TZ]/g, '').slice(0, 14)}-${suffix}`;
+}
+
+export function createInitHistoryEntry(id: string, timestamp: string, summary: string): HistoryEntry {
+  return {
+    actor: getActor(),
+    id,
+    op: 'init',
+    summary,
+    ts: timestamp,
+  };
+}
+
+export function createSyncHistoryEntry(id: string, timestamp: string, summary: string): HistoryEntry {
+  return {
+    actor: getActor(),
+    id,
+    op: 'sync',
+    summary,
+    ts: timestamp,
+  };
+}
+
+export function createImportHistoryEntry(
+  id: string,
+  timestamp: string,
+  from: string,
+  summary: string,
+): HistoryEntry {
+  return {
+    actor: getActor(),
+    from,
+    id,
+    op: 'import',
+    summary,
+    ts: timestamp,
+  };
+}
+
+export function createRenameHistoryEntry(
+  id: string,
+  timestamp: string,
+  before: string,
+  after: string,
+): HistoryEntry {
+  return {
+    actor: getActor(),
+    after,
+    before,
+    id,
+    op: 'rename',
+    ts: timestamp,
+  };
+}
+
+export function createRollbackHistoryEntry(id: string, timestamp: string, to: string): HistoryEntry {
+  return {
+    actor: getActor(),
+    id,
+    op: 'rollback',
+    to,
+    ts: timestamp,
+  };
+}

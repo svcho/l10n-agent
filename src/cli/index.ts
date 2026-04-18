@@ -5,14 +5,29 @@ import { resolve } from 'node:path';
 import { Command } from 'commander';
 
 import { buildCheckReport } from '../core/check.js';
+import { buildDedupeReport } from '../core/dedupe.js';
 import type { Diagnostic } from '../core/diagnostics.js';
 import { buildDoctorReport } from '../core/doctor.js';
+import { runImport } from '../core/import.js';
+import { runInit } from '../core/init.js';
 import { lintSourceKeys } from '../core/linter/lint-keys.js';
+import { runRename } from '../core/rename.js';
+import { runRollback } from '../core/rollback.js';
 import { loadProjectSnapshot } from '../core/store/load.js';
 import { buildSyncPlan, runSync } from '../core/sync.js';
 import { L10nError } from '../errors/l10n-error.js';
 import { CodexLocalProvider, codexPreflight } from '../providers/codex-local.js';
-import { printDiagnosticsReport, printDoctorReport, printSyncPlan, printSyncReport } from './output.js';
+import {
+  printDiagnosticsReport,
+  printDedupeReport,
+  printDoctorReport,
+  printImportReport,
+  printInitReport,
+  printRenameReport,
+  printRollbackReport,
+  printSyncPlan,
+  printSyncReport,
+} from './output.js';
 
 interface GlobalOptions {
   color: boolean;
@@ -103,6 +118,46 @@ program
   .option('--verbose', 'show extra error detail', false);
 
 program
+  .command('init')
+  .description('Scaffold l10n/ config and canonical store files.')
+  .option('--android-path <path>', 'relative path to Android strings.xml')
+  .option('--ios-path <path>', 'relative path to the iOS .xcstrings catalog')
+  .option('--import-from <source>', 'import existing strings from xcstrings or android')
+  .option('--no-import-existing', 'skip importing existing platform strings')
+  .option('--source-locale <locale>', 'canonical source locale', 'en')
+  .option(
+    '--target-locale <locale>',
+    'target locale to scaffold',
+    (value, previous: string[] = []) => [...previous, value],
+    [],
+  )
+  .action(async function initAction(this: Command) {
+    await runAction(this, async (options) => {
+      const commandOptions = this.opts<{
+        androidPath?: string;
+        importExisting?: boolean;
+        importFrom?: 'android' | 'xcstrings';
+        iosPath?: string;
+        sourceLocale?: string;
+        targetLocale: string[];
+      }>();
+      const report = await runInit(options.cwd, options.config, {
+        ...(commandOptions.androidPath ? { androidPath: commandOptions.androidPath } : {}),
+        ...(commandOptions.importExisting !== undefined
+          ? { importExisting: commandOptions.importExisting }
+          : {}),
+        ...(commandOptions.importFrom ? { importFrom: commandOptions.importFrom } : {}),
+        ...(commandOptions.iosPath ? { iosPath: commandOptions.iosPath } : {}),
+        ...(commandOptions.sourceLocale ? { sourceLocale: commandOptions.sourceLocale } : {}),
+        ...(commandOptions.targetLocale.length > 0 ? { targetLocales: commandOptions.targetLocale } : {}),
+      });
+
+      printInitReport(report, options);
+      return report.ok ? 0 : 1;
+    });
+  });
+
+program
   .command('lint')
   .description('Validate canonical key names and source-level constraints.')
   .action(async function lintAction(this: Command) {
@@ -136,6 +191,18 @@ program
   });
 
 program
+  .command('dedupe')
+  .description('Flag exact duplicate source copy across canonical keys.')
+  .action(async function dedupeAction(this: Command) {
+    await runAction(this, async (options) => {
+      const snapshot = await loadProjectSnapshot(options.cwd, options.config);
+      const report = buildDedupeReport(snapshot);
+      printDedupeReport(report, options);
+      return report.ok ? 0 : 1;
+    });
+  });
+
+program
   .command('doctor')
   .description('Print repo health and provider preflight information without translation calls.')
   .action(async function doctorAction(this: Command) {
@@ -153,6 +220,53 @@ program
       );
       printDoctorReport(report, options);
       return 0;
+    });
+  });
+
+program
+  .command('rename')
+  .description('Rename one canonical key across source, translations, and platform files.')
+  .argument('<from>')
+  .argument('<to>')
+  .option('--dry-run', 'compute the rename result without writing files', false)
+  .action(async function renameAction(this: Command, from: string, to: string) {
+    await runAction(this, async (options) => {
+      const snapshot = await loadProjectSnapshot(options.cwd, options.config);
+      const report = await runRename(snapshot, {
+        dryRun: this.opts<{ dryRun: boolean }>().dryRun,
+        from,
+        to,
+      });
+      printRenameReport(report, options);
+      return report.ok ? 0 : 1;
+    });
+  });
+
+program
+  .command('rollback')
+  .description('Restore tracked localization files to the state before a history entry.')
+  .requiredOption('--to <history-id>', 'history id to roll back to')
+  .action(async function rollbackAction(this: Command) {
+    await runAction(this, async (options) => {
+      const snapshot = await loadProjectSnapshot(options.cwd, options.config);
+      const report = await runRollback(snapshot, this.opts<{ to: string }>());
+      printRollbackReport(report, options);
+      return report.ok ? 0 : 1;
+    });
+  });
+
+program
+  .command('import')
+  .description('Import canonical source and translations from an existing platform format.')
+  .requiredOption('--from <source>', 'import source: xcstrings or android')
+  .option('--dry-run', 'compute the import result without writing files', false)
+  .action(async function importAction(this: Command) {
+    await runAction(this, async (options) => {
+      const commandOptions = this.opts<{ dryRun: boolean; from: 'android' | 'xcstrings' }>();
+      const snapshot = await loadProjectSnapshot(options.cwd, options.config);
+      const report = await runImport(snapshot, commandOptions);
+      printImportReport(report, options);
+      return report.ok ? 0 : 1;
     });
   });
 

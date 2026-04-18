@@ -4,7 +4,12 @@ import { Chalk } from 'chalk';
 
 import type { Diagnostic } from '../core/diagnostics.js';
 import type { CheckReport } from '../core/check.js';
+import type { DedupeReport } from '../core/dedupe.js';
 import type { DoctorReport } from '../core/doctor.js';
+import type { ImportReport } from '../core/import.js';
+import type { InitReport } from '../core/init.js';
+import type { RenameReport } from '../core/rename.js';
+import type { RollbackReport } from '../core/rollback.js';
 import type { SyncPlan, SyncReport } from '../core/sync.js';
 
 export interface OutputOptions {
@@ -143,4 +148,52 @@ export function printSyncReport(report: SyncReport, options: OutputOptions): voi
 
   const statusText = report.ok ? colors.green('ok') : colors.red('failed');
   process.stdout.write(`\n${statusText}  ${JSON.stringify(report.summary)}\n`);
+}
+
+export function printDedupeReport(report: DedupeReport, options: OutputOptions): void {
+  printDiagnosticsReport(report, options);
+}
+
+export function printRenameReport(report: RenameReport, options: OutputOptions): void {
+  printDiagnosticsReport(report, options);
+}
+
+export function printImportReport(report: ImportReport, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Imported from ${report.summary.from}\n`);
+  process.stdout.write(`Source keys: ${report.summary.source_keys}\n`);
+  for (const locale of report.summary.locales) {
+    process.stdout.write(`  ${locale.locale}: imported=${locale.imported} missing=${locale.missing}\n`);
+  }
+}
+
+export function printRollbackReport(report: RollbackReport, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Rolled back repo state to before history entry ${report.summary.restored_to}\n`);
+}
+
+export function printInitReport(report: InitReport, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Created ${report.summary.config_path}\n`);
+  process.stdout.write(
+    `Locales: ${report.summary.source_locale} -> ${report.summary.target_locales.join(', ')}\n`,
+  );
+  process.stdout.write(
+    `Codex preflight: ${report.preflight.loginStatus}, version ${report.preflight.detectedVersion ?? 'unavailable'}\n`,
+  );
+  if (report.imported_from) {
+    process.stdout.write(`Imported existing strings from ${report.imported_from}\n`);
+  }
 }
