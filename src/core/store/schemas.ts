@@ -34,7 +34,20 @@ export const TranslationFileSchema = z.object({
   version: z.literal(1),
 });
 
+export const CacheEntrySchema = z.object({
+  cached_at: z.string().datetime(),
+  locale: LocaleCode,
+  model_version: z.string(),
+  source_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  text: z.string(),
+});
+
 export const CacheFileSchema = z.object({
+  entries: z.array(CacheEntrySchema),
+  version: z.literal(2),
+});
+
+export const LegacyCacheFileSchema = z.object({
   entries: z.record(
     z.string(),
     z.object({
@@ -48,12 +61,30 @@ export const CacheFileSchema = z.object({
 export const SyncStateFileSchema = z.object({
   batch_index: z.number().int().min(0),
   completed_translations: z.number().int().min(0),
+  config_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  current_key: z.string().min(1).optional(),
+  current_locale: LocaleCode.optional(),
+  last_processed_key: z.string().min(1).optional(),
+  last_processed_locale: LocaleCode.optional(),
+  pid: z.number().int().positive().optional(),
+  source_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  started_at: z.string().datetime(),
+  status: z.enum(['interrupted', 'running']).default('running'),
+  total_translations: z.number().int().min(0),
+  updated_at: z.string().datetime(),
+  version: z.literal(1),
+});
+
+export const LegacySyncStateFileSchema = z.object({
+  batch_index: z.number().int().min(0),
+  completed_translations: z.number().int().min(0),
   current_key: z.string().min(1).optional(),
   current_locale: LocaleCode.optional(),
   last_processed_key: z.string().min(1).optional(),
   last_processed_locale: LocaleCode.optional(),
   pid: z.number().int().positive().optional(),
   started_at: z.string().datetime(),
+  status: z.enum(['interrupted', 'running']).optional(),
   total_translations: z.number().int().min(0),
   updated_at: z.string().datetime(),
   version: z.literal(1),
@@ -142,8 +173,11 @@ export const HistoryEntrySchema = z.discriminatedUnion('op', [
 
 export const HistoryFileSchema = z.array(HistoryEntrySchema);
 
+export type CacheEntry = z.infer<typeof CacheEntrySchema>;
 export type CacheFile = z.infer<typeof CacheFileSchema>;
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+export type LegacyCacheFile = z.infer<typeof LegacyCacheFileSchema>;
+export type LegacySyncStateFile = z.infer<typeof LegacySyncStateFileSchema>;
 export type LocaleCode = z.infer<typeof LocaleCode>;
 export type Placeholder = z.infer<typeof PlaceholderSchema>;
 export type SourceFile = z.infer<typeof SourceFileSchema>;

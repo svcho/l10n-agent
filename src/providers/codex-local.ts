@@ -376,7 +376,13 @@ export class ReplayCodexExecTransport implements CodexExecTransport {
 
   async run(request: CodexExecRequest): Promise<CodexExecResponse> {
     if (!request.request) {
-      throw new Error('Replay transport only supports translation fixtures');
+      throw new L10nError({
+        code: 'L10N_E0081',
+        details: {},
+        level: 'error',
+        next: 'Replay transport is only valid for translation requests in tests and offline fixtures.',
+        summary: 'Replay transport was called without a translation request',
+      });
     }
 
     const translationRequest = request.request;
@@ -388,9 +394,17 @@ export class ReplayCodexExecTransport implements CodexExecTransport {
     );
 
     if (!match) {
-      throw new Error(
-        `No recorded Codex fixture for ${translationRequest.sourceLocale}->${translationRequest.targetLocale}: ${translationRequest.sourceText}`,
-      );
+      throw new L10nError({
+        code: 'L10N_E0081',
+        details: {
+          source_locale: translationRequest.sourceLocale,
+          source_text: translationRequest.sourceText,
+          target_locale: translationRequest.targetLocale,
+        },
+        level: 'error',
+        next: 'Add or update the replay fixture for this translation request before running offline tests.',
+        summary: 'Replay transport could not find a matching recorded fixture',
+      });
     }
 
     return structuredClone(match.response);

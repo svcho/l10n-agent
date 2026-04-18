@@ -1,8 +1,8 @@
-import { cp, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { AndroidStringsAdapter } from '../../src/adapters/android/strings.js';
 import { IosXcstringsAdapter } from '../../src/adapters/ios/xcstrings.js';
@@ -78,7 +78,7 @@ describe('runSync', () => {
     const esTranslation = refreshed.translations.find((translation) => translation.locale === 'es')?.value;
     expect(deTranslation?.entries['settings.notifications.title']?.text).toBe('Benachrichtigungen');
     expect(esTranslation?.entries['settings.notifications.title']?.text).toBe('Notificaciones');
-    expect(refreshed.cache.value ? Object.keys(refreshed.cache.value.entries) : []).toHaveLength(3);
+    expect(refreshed.cache.value?.entries ?? []).toHaveLength(3);
     expect(refreshed.history.value?.at(-1)?.summary).toContain('2 translations generated');
     expect(refreshed.state.exists).toBe(false);
 
@@ -275,6 +275,98 @@ describe('runSync', () => {
     expect(refreshed.state.exists).toBe(false);
   });
 
+  it('fails with a reviewed-placeholder-divergence diagnostic and keeps the reviewed entry intact', async () => {
+    const projectDir = await createTempProject('reviewed-placeholder-divergence');
+
+    await updateSourceFile(projectDir, (source) => {
+      source.keys['settings.privacy.title'] = {
+        description: 'Settings screen title.',
+        placeholders: {
+          section: {
+            example: 'Privacy',
+            type: 'string',
+          },
+        },
+        text: 'Privacy {section}',
+      };
+    });
+
+    const dePath = join(projectDir, 'l10n/translations.de.json');
+    const deTranslation = JSON.parse(await readFile(dePath, 'utf8')) as {
+      entries: Record<string, {
+        model_version: string;
+        provider: string;
+        reviewed: boolean;
+        source_hash: string;
+        stale: boolean;
+        text: string;
+        translated_at: string;
+      }>;
+      locale: string;
+      version: number;
+    };
+    deTranslation.entries['settings.privacy.title'].reviewed = true;
+    await writeFile(dePath, stableStringify(deTranslation), 'utf8');
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runSync(snapshot, {
+      provider: await createReplayProvider(projectDir, 'sync-success.json'),
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'L10N_E0082',
+        }),
+      ]),
+    );
+
+    const refreshed = await loadProjectSnapshot(projectDir);
+    expect(refreshed.translations.find((translation) => translation.locale === 'de')?.value?.entries['settings.privacy.title'])
+      .toMatchObject({
+        reviewed: true,
+        text: 'Datenschutz',
+      });
+  });
+
+  it('archives reviewed entries whose source keys were removed instead of dropping them silently', async () => {
+    const projectDir = await createTempProject('orphaned-reviewed');
+
+    await updateSourceFile(projectDir, (source) => {
+      delete source.keys['settings.privacy.title'];
+    });
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runSync(snapshot, {
+      provider: await createReplayProvider(projectDir, 'sync-success.json'),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'L10N_E0083',
+        }),
+      ]),
+    );
+
+    const orphanedDir = join(projectDir, 'l10n/.snapshots/orphaned-reviewed');
+    const orphanedArchives = await readdir(orphanedDir);
+    expect(orphanedArchives).toHaveLength(1);
+    const archive = JSON.parse(await readFile(join(orphanedDir, orphanedArchives[0]!), 'utf8')) as {
+      entries: Record<string, { reviewed: boolean; text: string }>;
+    };
+    expect(archive.entries['settings.privacy.title']).toMatchObject({
+      reviewed: true,
+      text: 'Datenschutz',
+    });
+
+    const refreshed = await loadProjectSnapshot(projectDir);
+    expect(refreshed.translations.find((translation) => translation.locale === 'de')?.value?.entries['settings.privacy.title'])
+      .toBeUndefined();
+  });
+
   it('archives removed locales and strips them from platform files during sync', async () => {
     const projectDir = await createTempProject('sync-remove-locale');
     const configPath = join(projectDir, 'l10n/config.yaml');
@@ -364,5 +456,63 @@ describe('runSync', () => {
     expect(refreshed.history.value?.some((entry) => entry.op === 'remove_locale' && entry.locale === 'fr')).toBe(
       true,
     );
+  });
+
+  it('avoids archive-path collisions when the same archive timestamp already exists', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-18T12:34:56.000Z'));
+
+    try {
+      const projectDir = await createTempProject('archive-collision');
+      const configPath = join(projectDir, 'l10n/config.yaml');
+      const configWithFr = (await readFile(configPath, 'utf8')).replace('  - es\n', '  - es\n  - fr\n');
+      await writeFile(configPath, configWithFr, 'utf8');
+
+      const frTranslationPath = join(projectDir, 'l10n/translations.fr.json');
+      await writeFile(
+        frTranslationPath,
+        JSON.stringify(
+          {
+            entries: {
+              'settings.privacy.title': {
+                model_version: 'manual',
+                provider: 'human',
+                reviewed: true,
+                source_hash: 'sha256:9c432d31bfec7bccb6b1c0682109da54c2b0d107434f68c2ebb15a7cb08baee0',
+                stale: false,
+                text: 'Confidentialite',
+                translated_at: '2026-04-18T12:07:00Z',
+              },
+            },
+            locale: 'fr',
+            version: 1,
+          },
+          null,
+          2,
+        ) + '\n',
+        'utf8',
+      );
+
+      const existingArchivePath = join(projectDir, 'l10n/.archive/translations.fr.20260418123456.json');
+      await mkdir(join(projectDir, 'l10n/.archive'), { recursive: true });
+      await writeFile(existingArchivePath, '{}\n', 'utf8');
+      const configWithoutFr = (await readFile(configPath, 'utf8')).replace('  - fr\n', '');
+      await writeFile(configPath, configWithoutFr, 'utf8');
+
+      const snapshot = await loadProjectSnapshot(projectDir);
+      const report = await runSync(snapshot, {
+        provider: await createReplayProvider(projectDir, 'sync-success.json'),
+      });
+
+      expect(report.ok).toBe(true);
+      const archiveEntries = (await readdir(join(projectDir, 'l10n/.archive')))
+        .filter((entry) => entry.startsWith('translations.fr.20260418123456'));
+      expect(archiveEntries.sort()).toEqual([
+        'translations.fr.20260418123456-1.json',
+        'translations.fr.20260418123456.json',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

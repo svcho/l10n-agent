@@ -1,5 +1,4 @@
-import process from 'node:process';
-
+import { inspectSyncLock } from '../utils/lock.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
 import { buildSyncPlan } from './sync.js';
 import type { ProjectSnapshot } from './store/load.js';
@@ -42,28 +41,16 @@ interface ActiveSyncStatus {
   updated_at: string;
 }
 
-function isProcessRunning(pid?: number): boolean {
-  if (!pid) {
-    return false;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-export function buildStatusReport(
+export async function buildStatusReport(
   snapshot: ProjectSnapshot,
   options: {
     locales?: string[];
   } = {},
-): StatusReport {
-  const diagnostics = lintSourceKeys(snapshot.config, snapshot.source.value);
+): Promise<StatusReport> {
+  const diagnostics = [...snapshot.diagnostics, ...lintSourceKeys(snapshot.config, snapshot.source.value)];
   const plan = buildSyncPlan(snapshot, options.locales ? { locales: options.locales } : {});
   const state = snapshot.state.value;
+  const lockStatus = await inspectSyncLock(snapshot.l10nDir);
   const syncState: ActiveSyncStatus | null =
     state === null
       ? null
@@ -80,7 +67,7 @@ export function buildStatusReport(
           pid: state.pid ?? null,
           remaining_translations: Math.max(0, state.total_translations - state.completed_translations),
           started_at: state.started_at,
-          state: isProcessRunning(state.pid) ? 'running' : 'interrupted',
+          state: state.status === 'interrupted' || lockStatus.state !== 'running' ? 'interrupted' : 'running',
           total_translations: state.total_translations,
           updated_at: state.updated_at,
         };
@@ -104,7 +91,7 @@ export function buildStatusReport(
       removed: plan.total_removed,
       reviewed_skipped: plan.review_skips,
       source_keys: plan.source_keys,
-      sync_state: syncState?.state ?? 'idle',
+      sync_state: syncState?.state ?? (lockStatus.state === 'running' ? 'running' : 'idle'),
     },
   };
 }

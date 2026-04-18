@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CodexLocalProvider } from '../../src/providers/codex-local.js';
+import { CodexLocalProvider, ReplayCodexExecTransport } from '../../src/providers/codex-local.js';
 
 describe('CodexLocalProvider', () => {
   it('surfaces session permission failures with a specific diagnostic', async () => {
@@ -39,6 +39,45 @@ describe('CodexLocalProvider', () => {
           path: '/Users/test/.codex/sessions',
         },
         summary: 'Codex cannot access its local session files',
+      },
+    });
+  });
+
+  it('fails replay transport invariant checks with structured diagnostics', async () => {
+    const transport = new ReplayCodexExecTransport([]);
+
+    await expect(
+      transport.run({
+        cwd: process.cwd(),
+        outputSchemaPath: '/tmp/schema.json',
+        prompt: 'test',
+      }),
+    ).rejects.toMatchObject({
+      diagnostic: {
+        code: 'L10N_E0081',
+      },
+    });
+  });
+
+  it('fails when a replay fixture is missing', async () => {
+    const transport = new ReplayCodexExecTransport([]);
+
+    await expect(
+      transport.run({
+        cwd: process.cwd(),
+        outputSchemaPath: '/tmp/schema.json',
+        prompt: 'test',
+        request: {
+          glossary: {},
+          placeholders: [],
+          sourceLocale: 'en',
+          sourceText: 'Welcome',
+          targetLocale: 'de',
+        },
+      }),
+    ).rejects.toMatchObject({
+      diagnostic: {
+        code: 'L10N_E0081',
       },
     });
   });

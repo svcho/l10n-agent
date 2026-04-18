@@ -70,6 +70,18 @@ export function printDoctorReport(report: DoctorReport, options: OutputOptions):
   }
 
   const colors = createChalk(options.color);
+  for (const diagnostic of report.diagnostics) {
+    const level =
+      diagnostic.level === 'error'
+        ? colors.red(diagnostic.level)
+        : diagnostic.level === 'warn'
+          ? colors.yellow(diagnostic.level)
+          : colors.blue(diagnostic.level);
+    process.stdout.write(`${level}  ${diagnostic.code}  ${diagnostic.summary}\n`);
+  }
+  if (report.diagnostics.length > 0) {
+    process.stdout.write('\n');
+  }
   process.stdout.write(`Source keys: ${report.source_keys}\n`);
   process.stdout.write(
     `Codex: ${report.codex.loginStatus}, version ${report.codex.detectedVersion ?? 'unavailable'}, minimum ${report.codex.minimumVersion}\n`,
