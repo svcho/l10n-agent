@@ -51,7 +51,7 @@ export async function runRollback(
       getManagedFilePathsWithExtras(snapshot, trackedPaths),
     );
     await restoreManagedFiles(snapshot.rootDir, snapshot.l10nDir, options.to);
-    await appendHistoryEntries(snapshot.history.path, snapshot.history.value, [
+    await appendHistoryEntries(snapshot.history.path, [
       createRollbackHistoryEntry(historyId, timestamp, options.to),
     ]);
   } finally {

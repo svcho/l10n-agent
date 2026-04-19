@@ -63,7 +63,6 @@ export async function removeFileIfExists(path: string): Promise<void> {
 
 export async function appendHistoryEntries(
   path: string,
-  _existingEntries: HistoryEntry[] | null,
   newEntries: HistoryEntry[],
 ): Promise<void> {
   if (newEntries.length === 0) {
@@ -72,6 +71,25 @@ export async function appendHistoryEntries(
 
   const lines = newEntries.map((entry) => JSON.stringify(entry));
   await appendTextFile(path, `${lines.join('\n')}\n`);
+}
+
+export function garbageCollectCache(
+  entries: CacheEntry[],
+  activeSourceHashes: Set<string>,
+): CacheEntry[] {
+  const live = entries.filter((entry) => activeSourceHashes.has(entry.source_hash));
+
+  const groupMap = new Map<string, CacheEntry[]>();
+  for (const entry of live) {
+    const groupKey = `${entry.source_hash}|${entry.locale}|${entry.config_hash}`;
+    const group = groupMap.get(groupKey) ?? [];
+    group.push(entry);
+    groupMap.set(groupKey, group);
+  }
+
+  return [...groupMap.values()].flatMap((group) =>
+    group.sort((left, right) => right.cached_at.localeCompare(left.cached_at)).slice(0, 2),
+  );
 }
 
 export function upsertCacheEntry(entries: CacheEntry[], entry: CacheEntry): CacheEntry[] {

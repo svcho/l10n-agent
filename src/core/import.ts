@@ -16,6 +16,7 @@ import {
 import type { ExtendedCanonicalKeySet } from '../adapters/canonical.js';
 import type { SourceFile, TranslationEntry } from './store/schemas.js';
 import { appendHistoryEntries } from './store/write.js';
+import { acquireSyncLock } from '../utils/lock.js';
 
 export type ImportSource = 'android' | 'xcstrings';
 
@@ -192,20 +193,25 @@ export async function runImport(
     return report;
   }
 
-  const timestamp = new Date().toISOString();
-  const historyId = buildHistoryId(timestamp, 'import');
-  await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
-  await writeProjectFiles(snapshot, source, translations, { removeState: true });
-  await appendHistoryEntries(snapshot.history.path, snapshot.history.value, [
-    createImportHistoryEntry(
-      historyId,
-      timestamp,
-      options.from,
-      `Imported ${Object.keys(source.keys).length} source keys and ${report.summary.imported_entries} translations from ${options.from} (${basename(
-        options.from === 'xcstrings' ? snapshot.platformPaths.ios ?? 'unknown' : snapshot.platformPaths.android ?? 'unknown',
-      )})`,
-    ),
-  ]);
+  const lock = await acquireSyncLock(snapshot.l10nDir);
+  try {
+    const timestamp = new Date().toISOString();
+    const historyId = buildHistoryId(timestamp, 'import');
+    await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
+    await writeProjectFiles(snapshot, source, translations, { removeState: true });
+    await appendHistoryEntries(snapshot.history.path, [
+      createImportHistoryEntry(
+        historyId,
+        timestamp,
+        options.from,
+        `Imported ${Object.keys(source.keys).length} source keys and ${report.summary.imported_entries} translations from ${options.from} (${basename(
+          options.from === 'xcstrings' ? snapshot.platformPaths.ios ?? 'unknown' : snapshot.platformPaths.android ?? 'unknown',
+        )})`,
+      ),
+    ]);
+  } finally {
+    await lock.release().catch(() => undefined);
+  }
 
   return report;
 }

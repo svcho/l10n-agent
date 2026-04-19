@@ -273,16 +273,18 @@ export function parseCodexExecJsonl(stdout: string): string {
   return finalMessage;
 }
 
+const PREFLIGHT_TIMEOUT_MS = 15_000;
+
 export async function codexPreflight(minimumVersion: string): Promise<CodexPreflightResult> {
   try {
-    const versionResult = await execFileAsync('codex', ['--version']);
+    const versionResult = await execFileAsync('codex', ['--version'], { timeout: PREFLIGHT_TIMEOUT_MS });
     const versionOutput = `${versionResult.stdout}${versionResult.stderr}`;
     const detectedVersion = parseCodexVersion(versionOutput);
     const meetsMinimumVersion =
       detectedVersion !== null ? compareVersions(detectedVersion, minimumVersion) >= 0 : false;
 
     try {
-      const loginResult = await execFileAsync('codex', ['login', 'status']);
+      const loginResult = await execFileAsync('codex', ['login', 'status'], { timeout: PREFLIGHT_TIMEOUT_MS });
       const loginOutput = `${loginResult.stdout}${loginResult.stderr}`;
       const loginStatus = /logged in/i.test(loginOutput) ? 'logged-in' : 'unknown';
 
@@ -310,9 +312,16 @@ export async function codexPreflight(minimumVersion: string): Promise<CodexPrefl
   }
 }
 
+const DEFAULT_EXEC_TIMEOUT_MS = 5 * 60 * 1000;
+
 export class SpawnCodexExecTransport implements CodexExecTransport {
+  constructor(private readonly timeoutMs: number = DEFAULT_EXEC_TIMEOUT_MS) {}
+
   async run(request: CodexExecRequest): Promise<CodexExecResponse> {
     return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
       const args = [
         'exec',
         '--json',
@@ -335,6 +344,7 @@ export class SpawnCodexExecTransport implements CodexExecTransport {
       args.push('-');
 
       const child = spawn('codex', args, {
+        signal: controller.signal,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -348,9 +358,21 @@ export class SpawnCodexExecTransport implements CodexExecTransport {
         stderr += chunk.toString();
       });
       child.on('error', (error) => {
-        reject(error);
+        clearTimeout(timer);
+        if ((error as NodeJS.ErrnoException).code === 'ABORT_ERR') {
+          reject(new L10nError({
+            code: 'L10N_E0056',
+            details: { timeout_ms: this.timeoutMs },
+            level: 'error',
+            next: 'Re-run sync. If timeouts persist, check your network connection or upgrade Codex CLI.',
+            summary: 'Codex subprocess timed out',
+          }));
+        } else {
+          reject(error);
+        }
       });
       child.on('close', (exitCode) => {
+        clearTimeout(timer);
         resolve({
           exitCode: exitCode ?? 1,
           stderr,

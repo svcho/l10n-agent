@@ -35,6 +35,7 @@ import type {
 } from './store/schemas.js';
 import {
   appendHistoryEntries,
+  garbageCollectCache,
   removeFileIfExists,
   upsertCacheEntry,
   writeCacheFile,
@@ -497,7 +498,7 @@ async function resolveUniqueOrphanedReviewedArchivePath(
 
 function createReviewedStaleWarning(key: string, locale: string): Diagnostic {
   return {
-    code: 'L10N_E0064',
+    code: 'L10N_E0090',
     details: { key, locale },
     level: 'warn',
     next: 'Edit the translation manually or clear reviewed=true before re-running sync.',
@@ -827,7 +828,6 @@ export async function runSync(
   let cacheHits = 0;
   let lastCompletedTask: Pick<SyncTask, 'key' | 'locale'> | null = null;
   const startedAt = snapshot.state.value?.started_at ?? new Date().toISOString();
-  const historyEntries = [...(snapshot.history.value ?? [])];
   const historyTimestamp = new Date().toISOString();
   const historyId = buildHistoryId(historyTimestamp, 'sync');
   const lock = await acquireSyncLock(snapshot.l10nDir);
@@ -959,7 +959,7 @@ export async function runSync(
         } catch (error) {
           if (
             error instanceof L10nError &&
-            ['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)
+            ['L10N_E0053', 'L10N_E0054', 'L10N_E0055', 'L10N_E0056'].includes(error.diagnostic.code)
           ) {
             const timestamp = new Date().toISOString();
             await persistSyncProgressState(snapshot, {
@@ -969,7 +969,7 @@ export async function runSync(
               startedAt,
               totalTranslations: plan.total_pending_tasks,
             });
-            await appendHistoryEntries(snapshot.history.path, historyEntries, [
+            await appendHistoryEntries(snapshot.history.path, [
               createSyncHistoryEntry(
                 historyId,
                 timestamp,
@@ -1071,6 +1071,10 @@ export async function runSync(
       total: plan.total_pending_tasks,
     });
 
+    const activeSourceHashes = new Set(snapshot.source.hashes.values());
+    const gcedCacheEntries = garbageCollectCache(cacheEntries, activeSourceHashes);
+    cacheEntries.splice(0, cacheEntries.length, ...gcedCacheEntries);
+
     await writeProjectFiles(snapshot, snapshot.source.value, [...localeStates.values()], {
       cacheEntries,
       removeState: true,
@@ -1079,7 +1083,7 @@ export async function runSync(
     await archiveRemovedTranslations(snapshot.l10nDir, removedTranslationFiles, historyTimestamp);
 
     const timestamp = new Date().toISOString();
-    await appendHistoryEntries(snapshot.history.path, historyEntries, [
+    await appendHistoryEntries(snapshot.history.path, [
       ...addedLocales.map((locale) =>
         createAddLocaleHistoryEntry(buildHistoryId(timestamp, `add-locale-${locale}`), timestamp, locale),
       ),

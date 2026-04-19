@@ -16,6 +16,7 @@ import type { ProjectSnapshot } from './store/load.js';
 import type { SourceFile, TranslationEntry } from './store/schemas.js';
 import { appendHistoryEntries } from './store/write.js';
 import { readTextFile, writeTextFileAtomic } from '../utils/fs.js';
+import { acquireSyncLock } from '../utils/lock.js';
 import type { KeyRenameCandidate, KeyRenamePlan, TranslationProvider } from '../providers/base.js';
 
 const RENAMEABLE_LINT_CODES = new Set(['L10N_E0020', 'L10N_E0021', 'L10N_E0022', 'L10N_E0023']);
@@ -465,31 +466,36 @@ export async function runLintFix(
     phase: 'rewriting',
   });
 
-  const timestamp = new Date().toISOString();
-  const historyId = buildHistoryId(timestamp, 'lintfix');
-  await snapshotManagedFiles(
-    snapshot.rootDir,
-    snapshot.l10nDir,
-    historyId,
-    getManagedFilePathsWithExtras(
-      snapshot,
-      referenceRewrites.map((rewrite) => rewrite.path),
-    ),
-  );
-  await writeProjectFiles(snapshot, source, translations);
-
-  for (const rewrite of referenceRewrites) {
-    await writeTextFileAtomic(rewrite.path, rewrite.text);
-  }
-
-  await appendHistoryEntries(snapshot.history.path, snapshot.history.value, [
-    createLintFixHistoryEntry(
+  const lock = await acquireSyncLock(snapshot.l10nDir);
+  try {
+    const timestamp = new Date().toISOString();
+    const historyId = buildHistoryId(timestamp, 'lintfix');
+    await snapshotManagedFiles(
+      snapshot.rootDir,
+      snapshot.l10nDir,
       historyId,
-      timestamp,
-      renames.map((rename) => ({ after: rename.to, before: rename.from })),
-      referenceRewrites.length,
-    ),
-  ]);
+      getManagedFilePathsWithExtras(
+        snapshot,
+        referenceRewrites.map((rewrite) => rewrite.path),
+      ),
+    );
+    await writeProjectFiles(snapshot, source, translations);
+
+    for (const rewrite of referenceRewrites) {
+      await writeTextFileAtomic(rewrite.path, rewrite.text);
+    }
+
+    await appendHistoryEntries(snapshot.history.path, [
+      createLintFixHistoryEntry(
+        historyId,
+        timestamp,
+        renames.map((rename) => ({ after: rename.to, before: rename.from })),
+        referenceRewrites.length,
+      ),
+    ]);
+  } finally {
+    await lock.release().catch(() => undefined);
+  }
 
   const refreshedSnapshot: ProjectSnapshot = {
     ...snapshot,

@@ -66,7 +66,7 @@ describe('lintGlossary', () => {
 
     expect(diagnostics).toEqual([
       expect.objectContaining({
-        code: 'L10N_E0072',
+        code: 'L10N_E0087',
         details: expect.objectContaining({
           expected_term: 'Premium',
           key: 'settings.plan.title',

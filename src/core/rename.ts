@@ -12,6 +12,7 @@ import type { ProjectSnapshot } from './store/load.js';
 import type { SourceFile } from './store/schemas.js';
 import { appendHistoryEntries } from './store/write.js';
 import { L10nError } from '../errors/l10n-error.js';
+import { acquireSyncLock } from '../utils/lock.js';
 
 export interface RenameReport {
   diagnostics: Diagnostic[];
@@ -89,13 +90,18 @@ export async function runRename(
     return report;
   }
 
-  const timestamp = new Date().toISOString();
-  const historyId = buildHistoryId(timestamp, 'rename');
-  await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
-  await writeProjectFiles(snapshot, source, translations);
-  await appendHistoryEntries(snapshot.history.path, snapshot.history.value, [
-    createRenameHistoryEntry(historyId, timestamp, options.from, options.to),
-  ]);
+  const lock = await acquireSyncLock(snapshot.l10nDir);
+  try {
+    const timestamp = new Date().toISOString();
+    const historyId = buildHistoryId(timestamp, 'rename');
+    await snapshotManagedFiles(snapshot.rootDir, snapshot.l10nDir, historyId, getManagedFilePaths(snapshot));
+    await writeProjectFiles(snapshot, source, translations);
+    await appendHistoryEntries(snapshot.history.path, [
+      createRenameHistoryEntry(historyId, timestamp, options.from, options.to),
+    ]);
+  } finally {
+    await lock.release().catch(() => undefined);
+  }
 
   return report;
 }

@@ -93,7 +93,7 @@ function getExitCodeForError(error: unknown): number {
       return 6;
     }
 
-    if (['L10N_E0053', 'L10N_E0054', 'L10N_E0055'].includes(error.diagnostic.code)) {
+    if (['L10N_E0053', 'L10N_E0054', 'L10N_E0055', 'L10N_E0056'].includes(error.diagnostic.code)) {
       return 3;
     }
 

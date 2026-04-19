@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const LocaleCode = z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/);
+export const LocaleCode = z.string().regex(/^[a-z]{2,3}(-[A-Za-z]{4})?(-([A-Z]{2}|\d{3}))?$/);
 
 export const PlaceholderSchema = z.object({
   example: z.string().optional(),

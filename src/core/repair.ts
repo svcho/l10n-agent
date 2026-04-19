@@ -2,6 +2,7 @@ import { dirname, resolve } from 'node:path';
 
 import { loadConfig } from '../config/load.js';
 import { readTextFile, writeJsonFileAtomic } from '../utils/fs.js';
+import { acquireSyncLock } from '../utils/lock.js';
 import { sortValueDeep } from '../utils/json.js';
 import type { Diagnostic } from './diagnostics.js';
 import { hasErrorDiagnostics } from './diagnostics.js';
@@ -205,7 +206,7 @@ export async function runRepair(
       const variants = extractConflictVariants(rawText);
       if (!variants) {
         diagnostics.push({
-          code: 'L10N_E0073',
+          code: 'L10N_E0088',
           details: { path },
           level: 'error',
           next: 'Resolve the malformed git conflict markers manually, then rerun repair.',
@@ -221,7 +222,7 @@ export async function runRepair(
         rightParsed = JSON.parse(variants.right);
       } catch {
         diagnostics.push({
-          code: 'L10N_E0073',
+          code: 'L10N_E0088',
           details: { path },
           level: 'error',
           next: 'Resolve the conflict manually; repair only auto-merges valid JSON on both sides.',
@@ -233,7 +234,7 @@ export async function runRepair(
       const merged = mergeJsonValues(leftParsed, rightParsed);
       if (merged.conflictPath) {
         diagnostics.push({
-          code: 'L10N_E0073',
+          code: 'L10N_E0088',
           details: {
             conflict_path: merged.conflictPath,
             path,
@@ -252,7 +253,7 @@ export async function runRepair(
         parsed = JSON.parse(rawText);
       } catch {
         diagnostics.push({
-          code: 'L10N_E0073',
+          code: 'L10N_E0088',
           details: { path },
           level: 'error',
           next: 'Fix the JSON syntax manually, then rerun repair.',
@@ -280,23 +281,28 @@ export async function runRepair(
     },
   };
 
-  if (options.dryRun || !report.ok || rewritten.size === 0) {
+  if (options.dryRun || rewritten.size === 0) {
     return report;
   }
 
-  const timestamp = new Date().toISOString();
-  const historyId = buildHistoryId(timestamp, 'repair');
-  await snapshotManagedFiles(context.rootDir, context.l10nDir, historyId, files);
+  const lock = await acquireSyncLock(context.l10nDir);
+  try {
+    const timestamp = new Date().toISOString();
+    const historyId = buildHistoryId(timestamp, 'repair');
+    await snapshotManagedFiles(context.rootDir, context.l10nDir, historyId, files);
 
-  for (const [path, value] of [...rewritten.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    await writeJsonFileAtomic(path, value);
-  }
+    for (const [path, value] of [...rewritten.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      await writeJsonFileAtomic(path, value);
+    }
 
-  const existingHistory = await loadExistingHistoryEntries(context.historyPath);
-  if (existingHistory !== null) {
-    await appendHistoryEntries(context.historyPath, existingHistory, [
-      createRepairHistoryEntry(historyId, timestamp, `Repair rewrote ${rewritten.size} managed JSON files`),
-    ]);
+    const existingHistory = await loadExistingHistoryEntries(context.historyPath);
+    if (existingHistory !== null) {
+      await appendHistoryEntries(context.historyPath, [
+        createRepairHistoryEntry(historyId, timestamp, `Repair rewrote ${rewritten.size} managed JSON files`),
+      ]);
+    }
+  } finally {
+    await lock.release().catch(() => undefined);
   }
 
   return report;

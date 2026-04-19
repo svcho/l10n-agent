@@ -210,7 +210,7 @@ export async function runInit(
       JSON.stringify(createTranslationFile(locale), null, 2) + '\n',
     );
   }
-  await appendHistoryEntries(historyPath, null, [
+  await appendHistoryEntries(historyPath, [
     createInitHistoryEntry(
       initHistoryId,
       initTimestamp,

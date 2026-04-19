@@ -10,7 +10,7 @@ function containsGlossaryTerm(text: string, term: string): boolean {
     return true;
   }
 
-  return new RegExp(escapeRegExp(term), 'u').test(text);
+  return new RegExp(`(?<!\\p{L})${escapeRegExp(term)}(?!\\p{L})`, 'u').test(text);
 }
 
 export function lintGlossary(snapshot: ProjectSnapshot): Diagnostic[] {
@@ -38,7 +38,7 @@ export function lintGlossary(snapshot: ProjectSnapshot): Diagnostic[] {
         }
 
         diagnostics.push({
-          code: 'L10N_E0072',
+          code: 'L10N_E0087',
           details: {
             expected_term: targetTerm,
             key,

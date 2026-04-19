@@ -66,7 +66,10 @@ Native files are derived outputs. They should not become the long-term source of
 - placeholder parity must be preserved across translations (order-sensitive for digit-named positional placeholders; count-sensitive for all names)
 - semantic dedupe may propose merges but must never auto-merge keys
 - cache hits require matching `config_hash` (provider-relevant config subset) in addition to `source_hash` and `locale`; changing glossary or provider settings busts affected entries
-- `rollback` must acquire the sync lock before any file I/O and must validate the target snapshot before creating a recovery snapshot
+- `rollback`, `rename`, `import`, `repair`, and `lint --fix` must all acquire the sync lock before any file I/O and release it in a `finally` block
+- `rollback` must additionally validate the target snapshot before creating a recovery snapshot
+- `repair` must write each successfully-parsed file independently; a parse error on one file must not block rewrites on other valid files
+- Codex subprocess invocations must carry an `AbortController`-backed timeout (default 5 minutes); preflight calls must time out at 15 seconds
 
 ## Provider model
 
@@ -92,8 +95,12 @@ Failure codes currently matter as product behavior:
 - `L10N_E0053` rate limit or quota
 - `L10N_E0054` subprocess failure
 - `L10N_E0055` malformed provider protocol/output
-- `L10N_E0079` sync lock already held (also used for rollback lock contention)
+- `L10N_E0056` subprocess timed out (default 5-minute wall-clock limit per invocation)
+- `L10N_E0079` sync lock already held (also used for rollback, rename, import, repair, lint-fix lock contention)
 - `L10N_E0086` cache schema upgrade — v1/v2 cache dropped, translations will re-run
+- `L10N_E0087` glossary term not preserved in a translation
+- `L10N_E0088` repair could not parse or merge a managed JSON file
+- `L10N_E0090` reviewed translation skipped by sync (reviewed-stale warning)
 
 ## Data model summary
 

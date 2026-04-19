@@ -2,6 +2,46 @@
 
 All notable changes to `l10n-agent` are documented here.
 
+## 0.3.0 — 2026-04-19
+
+### Correctness fixes
+
+**Diagnostic code collisions eliminated** — Several diagnostic codes were reused across unrelated checks, making it impossible to reliably filter or suppress a specific class of problem:
+
+- Glossary term mismatch (`lintGlossary`) previously shared `L10N_E0072` with lint autofix "no safe destination key". Glossary violations are now `L10N_E0087`.
+- Repair JSON parse and conflict-merge errors previously shared `L10N_E0073` with lint autofix "source key no longer exists". Repair errors are now `L10N_E0088`.
+- The reviewed-translation stale warning emitted during `sync` previously shared `L10N_E0064` with the `check` command's stale-source-hash diagnostic. The sync warning is now `L10N_E0090`.
+
+**Glossary word-boundary matching** — `lint --glossary` previously used a bare substring match, causing false positives when a glossary term appeared as part of a longer word (for example "App" matching inside "Apple"). Matching now uses Unicode letter lookbehind/lookahead (`(?<!\p{L})…(?!\p{L})`) so only genuine word boundaries trigger a violation.
+
+**Locale code validation expanded** — The `LocaleCode` validator previously rejected valid BCP-47 tags with three-letter primary subtags (`fil` for Filipino, `yue` for Cantonese) and four-letter script subtags (`zh-Hans`, `zh-Hant`, `sr-Latn`). The regex now accepts the form `[a-z]{2,3}(-[A-Za-z]{4})?(-([A-Z]{2}|\d{3}))?`.
+
+### Reliability fixes
+
+**Sync lock now held by `rename`, `import`, `repair`, and `lint --fix`** — Previously only `sync` and `rollback` acquired the `.lock` file before writing managed localization state. Running a rename, import, repair, or lint-fix concurrently with an active sync could silently corrupt state. All write-path commands now acquire and release the sync lock around their file I/O, consistent with the behavior of `sync` and `rollback`.
+
+**`repair` now writes per-file instead of blocking all rewrites on any parse error** — If one managed file had unparseable JSON, `repair` previously aborted every rewrite, including files that were fully valid and ready to be canonically re-sorted. The parse-error diagnostic is still emitted; only files that successfully parsed are now written, independently of errors in other files.
+
+**Codex subprocess timeout** — `SpawnCodexExecTransport` previously had no timeout. A hung Codex process would block `sync`, `dedupe`, and `lint --fix` indefinitely. Each execution is now cancelled after five minutes (default) using `AbortController`. Preflight `codex --version` and `codex login status` calls are capped at 15 seconds. A hung or cancelled invocation emits `L10N_E0056` and is treated as a retryable provider error.
+
+### Cache garbage collection
+
+`sync` now prunes the cache file after each completed run:
+
+- Entries whose `source_hash` no longer matches any key in the current source file are removed.
+- For each `(source_hash, locale, config_hash)` group, only the two most-recently written model-version entries are kept.
+
+This bounds cache growth when provider model versions change over time or when source keys are deleted.
+
+### New diagnostic codes
+
+- `L10N_E0056` — Codex subprocess timed out. Retrying usually resolves this; if it persists, check the network connection or upgrade Codex CLI.
+- `L10N_E0087` — A translation does not preserve a configured glossary term (previously `L10N_E0072`).
+- `L10N_E0088` — `repair` could not parse or merge a managed JSON file (previously `L10N_E0073`).
+- `L10N_E0090` — A reviewed translation was left stale because `sync` does not overwrite human-reviewed entries (previously `L10N_E0064` in `sync`; `check` continues to use `L10N_E0064` for its own stale-source-hash diagnostic).
+
+---
+
 ## 0.2.0 — 2026-04-18
 
 ### Correctness fixes
