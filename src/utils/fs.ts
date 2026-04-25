@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import process from 'node:process';
 
 import { stableStringify } from './json.js';
 
@@ -29,7 +30,7 @@ async function fsyncDirectory(path: string): Promise<void> {
 
 export async function writeTextFileAtomic(path: string, value: string): Promise<void> {
   const parentDir = dirname(path);
-  const temporaryPath = `${path}.tmp`;
+  const temporaryPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
 
   await mkdir(parentDir, { recursive: true });
   const fileHandle = await open(temporaryPath, 'w');

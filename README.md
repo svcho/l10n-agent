@@ -417,20 +417,19 @@ The goal is to:
 3. replace hard-coded app strings with key-based lookups
 4. let `l10n-agent` manage the localized content from then on
 
-#### 1. Create minimal native localization containers
+#### 1. Choose native localization container paths
 
-You need at least one managed platform file so `init` has a target.
+You need at least one managed platform path so `init` has a target. You can either create the files first or pass the paths explicitly and let `init --no-import-existing` create empty containers.
 
 For iOS:
 
-- create an iOS localization container:
-  - `.xcstrings` catalog such as `ios/MyApp/Localizable.xcstrings`, or
-  - `Localizable.strings` at `MyApp/en.lproj/Localizable.strings`
+- use a `.xcstrings` catalog such as `ios/MyApp/Localizable.xcstrings`, or
+- use `Localizable.strings` at `MyApp/en.lproj/Localizable.strings`
 
 For Android:
 
-- create `android/app/src/main/res/values/strings.xml`
-  It can start nearly empty:
+- use `android/app/src/main/res/values/strings.xml`
+  If you create it yourself, it can start nearly empty:
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -438,12 +437,18 @@ For Android:
 </resources>
 ```
 
-If the project supports only one platform, that is enough. If it supports both, create both upfront.
+If the project supports only one platform, that is enough. If it supports both, pass both paths.
 
 #### 2. Initialize `l10n-agent`
 
 ```bash
-l10n-agent init --source-locale en --target-locale de --target-locale es --no-import-existing
+l10n-agent init \
+  --source-locale en \
+  --target-locale de \
+  --target-locale es \
+  --ios-path ios/MyApp/Localizable.xcstrings \
+  --android-path android/app/src/main/res/values/strings.xml \
+  --no-import-existing
 ```
 
 Use `--no-import-existing` when there is nothing useful to import yet.

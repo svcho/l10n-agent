@@ -174,6 +174,37 @@ describe('Milestone 5 flows', () => {
     });
   });
 
+  it('refuses to import native translations whose placeholders diverge from source', async () => {
+    const projectDir = await createTempProject('import-placeholder-mismatch');
+    const catalogPath = join(projectDir, 'ios/MyApp/Localizable.xcstrings');
+    const catalog = JSON.parse(await readFile(catalogPath, 'utf8')) as {
+      strings: Record<string, { localizations: Record<string, { stringUnit: { value: string }; substitutions?: unknown }> }>;
+    };
+    delete catalog.strings['onboarding.welcome.title']!.localizations.de.substitutions;
+    catalog.strings['onboarding.welcome.title']!.localizations.de.stringUnit.value = 'Willkommen zu Hause';
+    await writeJson(catalogPath, catalog);
+    await writeJson(join(projectDir, 'l10n/source.en.json'), { keys: {}, version: 1 });
+    await writeJson(join(projectDir, 'l10n/translations.de.json'), { entries: {}, locale: 'de', version: 1 });
+    await writeJson(join(projectDir, 'l10n/translations.es.json'), { entries: {}, locale: 'es', version: 1 });
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    const report = await runImport(snapshot, { from: 'xcstrings' });
+
+    expect(report.ok).toBe(false);
+    expect(report.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'L10N_E0041',
+          details: expect.objectContaining({ key: 'onboarding.welcome.title', locale: 'de' }),
+        }),
+      ]),
+    );
+
+    const refreshed = await loadProjectSnapshot(projectDir);
+    expect(Object.keys(refreshed.source.value.keys)).toEqual([]);
+    expect(refreshed.history.value?.at(-1)).not.toMatchObject({ op: 'import' });
+  });
+
   it('rolls back tracked localization files to the snapshot before a history entry', async () => {
     const projectDir = await createTempProject('rollback');
     const beforeRename = await loadProjectSnapshot(projectDir);
@@ -243,5 +274,33 @@ describe('Milestone 5 flows', () => {
       'onboarding.welcome.title',
       'settings.privacy.title',
     ]);
+  });
+
+  it('initializes greenfield native containers from explicit paths without importing', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'l10n-agent-init-greenfield-'));
+
+    const report = await runInit(projectDir, undefined, {
+      androidPath: 'android/app/src/main/res/values/strings.xml',
+      iosPath: 'ios/MyApp/Localizable.xcstrings',
+      importExisting: false,
+      sourceLocale: 'en',
+      targetLocales: ['de'],
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.imported_from).toBeNull();
+
+    const snapshot = await loadProjectSnapshot(projectDir);
+    expect(snapshot.config.platforms.android?.path).toBe('android/app/src/main/res/values/strings.xml');
+    expect(snapshot.config.platforms.ios?.path).toBe('ios/MyApp/Localizable.xcstrings');
+    expect(Object.keys(snapshot.source.value.keys)).toEqual([]);
+    expect(await readFile(join(projectDir, 'android/app/src/main/res/values/strings.xml'), 'utf8')).toBe(
+      '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n',
+    );
+    expect(JSON.parse(await readFile(join(projectDir, 'ios/MyApp/Localizable.xcstrings'), 'utf8'))).toMatchObject({
+      sourceLanguage: 'en',
+      strings: {},
+      version: '1.0',
+    });
   });
 });

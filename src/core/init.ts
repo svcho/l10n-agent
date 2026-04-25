@@ -87,6 +87,37 @@ async function detectPlatformPaths(rootDir: string): Promise<DetectedPlatformPat
   };
 }
 
+async function createEmptyPlatformContainer(path: string, sourceLocale: string): Promise<void> {
+  if (await pathExists(path)) {
+    return;
+  }
+
+  if (path.toLowerCase().endsWith('.xcstrings')) {
+    await writeTextFileAtomic(
+      path,
+      JSON.stringify(
+        {
+          sourceLanguage: sourceLocale,
+          strings: {},
+          version: '1.0',
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+    return;
+  }
+
+  if (path.toLowerCase().endsWith('.strings')) {
+    await writeTextFileAtomic(path, '');
+    return;
+  }
+
+  if (path.toLowerCase().endsWith('.xml')) {
+    await writeTextFileAtomic(path, '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n');
+  }
+}
+
 function buildConfig(options: {
   androidPath: string | null;
   iosPath: string | null;
@@ -171,6 +202,8 @@ export async function runInit(
   }
 
   const sourceLocale = options.sourceLocale ?? 'en';
+  const iosPathExisted = iosPath ? await pathExists(resolve(rootDir, iosPath)) : false;
+  const androidPathExisted = androidPath ? await pathExists(resolve(rootDir, androidPath)) : false;
   const targetLocales = [...new Set(options.targetLocales ?? [])];
   const effectiveTargetLocales =
     targetLocales.length > 0
@@ -210,6 +243,12 @@ export async function runInit(
       JSON.stringify(createTranslationFile(locale), null, 2) + '\n',
     );
   }
+  if (iosPath) {
+    await createEmptyPlatformContainer(resolve(rootDir, iosPath), sourceLocale);
+  }
+  if (androidPath) {
+    await createEmptyPlatformContainer(resolve(rootDir, androidPath), sourceLocale);
+  }
   await appendHistoryEntries(historyPath, [
     createInitHistoryEntry(
       initHistoryId,
@@ -221,7 +260,8 @@ export async function runInit(
   const importFrom =
     options.importExisting === false
       ? null
-      : options.importFrom ?? (iosPath ? 'xcstrings' : androidPath ? 'android' : null);
+      : options.importFrom ??
+        (iosPath && iosPathExisted ? 'xcstrings' : androidPath && androidPathExisted ? 'android' : null);
 
   if (importFrom) {
     const snapshot = await loadProjectSnapshot(rootDir, explicitConfigPath);

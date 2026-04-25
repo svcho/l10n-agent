@@ -109,6 +109,7 @@ export async function inspectSyncLock(l10nDir: string): Promise<SyncLockStatus> 
 export async function acquireSyncLock(l10nDir: string): Promise<SyncLockHandle> {
   const path = getSyncLockPath(l10nDir);
   const now = new Date().toISOString();
+  let released = false;
   const lockFile: SyncLockFile = {
     pid: process.pid,
     started_at: now,
@@ -145,6 +146,10 @@ export async function acquireSyncLock(l10nDir: string): Promise<SyncLockHandle> 
   return {
     path,
     async refresh() {
+      if (released) {
+        return;
+      }
+
       const updatedAt = new Date().toISOString();
       await writeLockFile(path, {
         ...lockFile,
@@ -152,6 +157,7 @@ export async function acquireSyncLock(l10nDir: string): Promise<SyncLockHandle> 
       }, 'r+');
     },
     async release() {
+      released = true;
       await rm(path, { force: true });
     },
   };

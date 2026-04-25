@@ -1,10 +1,10 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
-import { AndroidStringsAdapter } from '../../../src/adapters/android/strings.js';
+import { AndroidStringsAdapter, resolveAndroidLocalePath } from '../../../src/adapters/android/strings.js';
 import { L10nError } from '../../../src/errors/l10n-error.js';
 
 describe('AndroidStringsAdapter', () => {
@@ -61,5 +61,48 @@ describe('AndroidStringsAdapter', () => {
         code: 'L10N_E0042',
       }),
     } satisfies Partial<L10nError>);
+  });
+
+  it('uses Android BCP-47 resource directories for script and numeric-region locales', async () => {
+    const adapter = new AndroidStringsAdapter({
+      keyTransform: 'snake_case',
+      sourceLocale: 'en',
+    });
+    const workingDir = await mkdtemp(join(tmpdir(), 'l10n-agent-android-bcp47-'));
+    const outputPath = join(workingDir, 'res/values/strings.xml');
+
+    await adapter.write(
+      outputPath,
+      {
+        keys: new Map([
+          [
+            'onboarding.welcome.title',
+            {
+              placeholders: [],
+              text: '歡迎',
+            },
+          ],
+        ]),
+      },
+      'zh-Hant-TW',
+    );
+
+    expect(resolveAndroidLocalePath(outputPath, 'en', 'zh-Hant-TW')).toBe(
+      join(workingDir, 'res/values-b+zh+Hant+TW/strings.xml'),
+    );
+    expect(await readFile(join(workingDir, 'res/values-b+zh+Hant+TW/strings.xml'), 'utf8')).toContain(
+      '<string name="onboarding_welcome_title">歡迎</string>',
+    );
+
+    await mkdir(join(workingDir, 'res/values-b+es+419'), { recursive: true });
+    await writeFile(
+      join(workingDir, 'res/values-b+es+419/strings.xml'),
+      '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n  <string name="onboarding_welcome_title">Bienvenido</string>\n</resources>\n',
+      'utf8',
+    );
+
+    const inspection = await adapter.inspect(outputPath);
+    expect(inspection.locales).toContain('zh-Hant-TW');
+    expect(inspection.locales).toContain('es-419');
   });
 });

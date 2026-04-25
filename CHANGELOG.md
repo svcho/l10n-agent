@@ -2,6 +2,22 @@
 
 All notable changes to `l10n-agent` are documented here.
 
+## 0.3.1-beta.0 — 2026-04-25
+
+### Correctness fixes
+
+**Persisted translation placeholder parity** — `check`, `sync`, and `import` now validate placeholder parity for existing/imported translation JSON, not only fresh provider output. A translation whose `source_hash` matches but whose text drops, duplicates, or reorders positional placeholders now emits `L10N_E0041`.
+
+**Android BCP-47 locale directories** — Android output now uses `values-b+...` qualifiers for locales that cannot be represented by legacy `values-xx` / `values-xx-rYY` directories, such as `zh-Hant-TW` and `es-419`.
+
+### Reliability fixes
+
+**SIGINT lock cleanup** — Interrupted `sync` runs now detach the active sync context before async cleanup and prevent released lock handles from being refreshed back onto disk.
+
+**Greenfield init containers** — `init --no-import-existing` now creates empty native containers for explicit iOS and Android paths when they do not already exist.
+
+**Repair lock boundary** — Non-dry-run `repair` now acquires the sync lock before loading and scanning managed localization files, then holds it through snapshots and rewrites.
+
 ## 0.3.0 — 2026-04-19
 
 ### Correctness fixes

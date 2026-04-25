@@ -60,16 +60,20 @@ function buildUnsupportedPluralError(path: string, key: string, locale: string):
 }
 
 function localeToAndroidDirectory(locale: string): string {
-  const [language, region] = locale.split('-');
+  const [language, scriptOrRegion, region] = locale.split('-');
   if (!language) {
     return 'values';
   }
 
-  if (!region) {
+  if (!scriptOrRegion) {
     return `values-${language}`;
   }
 
-  return `values-${language}-r${region}`;
+  if (!region && /^[A-Z]{2}$/u.test(scriptOrRegion)) {
+    return `values-${language}-r${scriptOrRegion}`;
+  }
+
+  return `values-b+${[language, scriptOrRegion, region].filter(Boolean).join('+')}`;
 }
 
 function androidDirectoryToLocale(directory: string): string | null {
@@ -77,7 +81,13 @@ function androidDirectoryToLocale(directory: string): string | null {
     return null;
   }
 
-  const match = /^values-([a-z]{2})(?:-r([A-Z]{2}))?$/.exec(directory);
+  const bcp47Match = /^values-b\+([a-z]{2,3})(?:\+([A-Za-z]{4}))?(?:\+([A-Z]{2}|\d{3}))?$/u.exec(directory);
+  if (bcp47Match) {
+    const [, language, script, region] = bcp47Match;
+    return [language, script, region].filter(Boolean).join('-');
+  }
+
+  const match = /^values-([a-z]{2,3})(?:-r([A-Z]{2}|\d{3}))?$/u.exec(directory);
   if (!match) {
     return null;
   }

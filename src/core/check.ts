@@ -12,6 +12,7 @@ import { L10nError } from '../errors/l10n-error.js';
 import type { Diagnostic } from './diagnostics.js';
 import { compareDiagnostics, hasErrorDiagnostics } from './diagnostics.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
+import { hasPlaceholderParity } from './placeholders/parity.js';
 import type { ProjectSnapshot } from './store/load.js';
 
 export interface CheckReport {
@@ -214,6 +215,20 @@ export async function buildCheckReport(snapshot: ProjectSnapshot): Promise<Check
           level: 'error',
           next: 'Refresh the translation so its source hash matches the canonical source.',
           summary: 'Translation entry is stale relative to source',
+        });
+      }
+
+      const sourceKey = snapshot.source.value.keys[key];
+      if (sourceKey && !hasPlaceholderParity(sourceKey, entry.text)) {
+        diagnostics.push({
+          code: 'L10N_E0041',
+          details: {
+            key,
+            locale: translation.locale,
+          },
+          level: 'error',
+          next: 'Fix the translation manually or rerun sync after clearing reviewed=true if needed.',
+          summary: 'Translation placeholders do not match the canonical source',
         });
       }
     }

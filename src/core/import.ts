@@ -6,6 +6,7 @@ import { L10nError } from '../errors/l10n-error.js';
 import { computeSourceHash } from './store/hash.js';
 import type { ProjectSnapshot } from './store/load.js';
 import type { Diagnostic } from './diagnostics.js';
+import { hasErrorDiagnostics } from './diagnostics.js';
 import { buildHistoryId, createImportHistoryEntry } from './history.js';
 import {
   getManagedFilePaths,
@@ -17,6 +18,7 @@ import type { ExtendedCanonicalKeySet } from '../adapters/canonical.js';
 import type { SourceFile, TranslationEntry } from './store/schemas.js';
 import { appendHistoryEntries } from './store/write.js';
 import { acquireSyncLock } from '../utils/lock.js';
+import { hasPlaceholderParity } from './placeholders/parity.js';
 
 export type ImportSource = 'android' | 'xcstrings';
 
@@ -146,6 +148,7 @@ export async function runImport(
   const translatedAt = new Date().toISOString();
   const translations: TranslationLocaleState[] = [];
   const localeReports: ImportLocaleReport[] = [];
+  const diagnostics: Diagnostic[] = [...snapshot.diagnostics];
 
   for (const translationFile of snapshot.translations) {
     const localeCanonical = await readCanonicalForLocale(snapshot, options.from, translationFile.locale);
@@ -154,6 +157,20 @@ export async function runImport(
     for (const [key, sourceKey] of Object.entries(source.keys)) {
       const importedValue = localeCanonical.keys.get(key);
       if (!importedValue || importedValue.text.trim().length === 0) {
+        continue;
+      }
+
+      if (!hasPlaceholderParity(sourceKey, importedValue.text)) {
+        diagnostics.push({
+          code: 'L10N_E0041',
+          details: {
+            key,
+            locale: translationFile.locale,
+          },
+          level: 'error',
+          next: 'Fix the native translation placeholders and rerun import, or leave the key for sync to translate.',
+          summary: 'Imported translation placeholders do not match the source text',
+        });
         continue;
       }
 
@@ -177,10 +194,9 @@ export async function runImport(
     });
   }
 
-  const diagnostics: Diagnostic[] = [...snapshot.diagnostics];
   const report: ImportReport = {
     diagnostics,
-    ok: true,
+    ok: !hasErrorDiagnostics(diagnostics),
     summary: {
       from: options.from,
       imported_entries: localeReports.reduce((sum, locale) => sum + locale.imported, 0),
@@ -189,7 +205,7 @@ export async function runImport(
     },
   };
 
-  if (options.dryRun) {
+  if (options.dryRun || !report.ok) {
     return report;
   }
 

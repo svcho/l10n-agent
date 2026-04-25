@@ -18,7 +18,7 @@ import {
   createRemoveLocaleHistoryEntry,
   createSyncHistoryEntry,
 } from './history.js';
-import { extractIcuPlaceholderMatches } from './placeholders/icu.js';
+import { hasPlaceholderParity } from './placeholders/parity.js';
 import { lintSourceKeys } from './linter/lint-keys.js';
 import {
   getManagedFilePathsWithExtras,
@@ -128,79 +128,6 @@ interface ActiveSyncContext {
 }
 
 let activeSyncContext: ActiveSyncContext | null = null;
-
-interface PlaceholderSignature {
-  /** Placeholder names in extraction order. */
-  ordered: string[];
-  /** Frequency map — how many times each name appears. */
-  counts: Map<string, number>;
-  /** Sorted type signature string for each unique name. */
-  types: string;
-}
-
-function buildPlaceholderSignature(source: SourceKey, text: string): PlaceholderSignature {
-  const matches = extractIcuPlaceholderMatches(text);
-  const ordered = matches.map((m) => m.name);
-
-  const counts = new Map<string, number>();
-  for (const name of ordered) {
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-
-  const typeLookup = new Map(
-    Object.entries(source.placeholders).map(([name, placeholder]) => [name, placeholder.type]),
-  );
-  const types = [...counts.keys()]
-    .sort()
-    .map((name) => `${name}:${typeLookup.get(name) ?? 'string'}`)
-    .join('|');
-
-  return { counts, ordered, types };
-}
-
-function areMapsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
-  if (a.size !== b.size) {
-    return false;
-  }
-  for (const [key, value] of a) {
-    if (b.get(key) !== value) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function hasPlaceholderParity(source: SourceKey, targetText: string): boolean {
-  const sourceSig = buildPlaceholderSignature(source, source.text);
-  const targetSig = buildPlaceholderSignature(source, targetText);
-
-  // 1. Total placeholder count must match.
-  if (sourceSig.ordered.length !== targetSig.ordered.length) {
-    return false;
-  }
-
-  // 2. Multiset equality — each name must appear the same number of times.
-  if (!areMapsEqual(sourceSig.counts, targetSig.counts)) {
-    return false;
-  }
-
-  // 3. Type signature must match.
-  if (sourceSig.types !== targetSig.types) {
-    return false;
-  }
-
-  // 4. Positional ordering for digit-named placeholders ({0}, {1}, …).
-  //    Named ICU placeholders like {count} or {user} may be reordered
-  //    across languages for grammatical reasons, so we only enforce ordering
-  //    for purely numeric names which are inherently positional.
-  const sourcePositional = sourceSig.ordered.filter((name) => /^\d+$/u.test(name));
-  const targetPositional = targetSig.ordered.filter((name) => /^\d+$/u.test(name));
-  if (sourcePositional.join('|') !== targetPositional.join('|')) {
-    return false;
-  }
-
-  return true;
-}
 
 function createInternalInvariantError(summary: string, details: Record<string, string> = {}): L10nError {
   return new L10nError({
@@ -632,9 +559,11 @@ export async function interruptActiveSync(): Promise<boolean> {
     return false;
   }
 
+  const context = activeSyncContext;
+  activeSyncContext = null;
   const state =
-    activeSyncContext.latestState ??
-    buildSyncState(activeSyncContext.snapshot, {
+    context.latestState ??
+    buildSyncState(context.snapshot, {
       completedTranslations: 0,
       startedAt: new Date().toISOString(),
       status: 'interrupted',
@@ -646,10 +575,9 @@ export async function interruptActiveSync(): Promise<boolean> {
     updated_at: new Date().toISOString(),
   };
 
-  await writeSyncState(activeSyncContext.snapshot.state.path, interruptedState);
-  await activeSyncContext.lock.release();
-  activeSyncContext.latestState = interruptedState;
-  activeSyncContext = null;
+  context.latestState = interruptedState;
+  await writeSyncState(context.snapshot.state.path, interruptedState);
+  await context.lock.release();
   return true;
 }
 
@@ -725,9 +653,29 @@ export async function runSync(
         !sourceKey ||
         !existingEntry ||
         !expectedHash ||
-        existingEntry.source_hash === expectedHash ||
         !existingEntry.reviewed
       ) {
+        if (
+          sourceKey &&
+          existingEntry &&
+          expectedHash &&
+          existingEntry.source_hash === expectedHash &&
+          existingEntry.text.trim().length > 0 &&
+          !hasPlaceholderParity(sourceKey, existingEntry.text)
+        ) {
+          diagnostics.push(
+            createPlaceholderDiagnostic(key, localePlan.locale, sourceKey.text, existingEntry.text),
+          );
+        }
+        continue;
+      }
+
+      if (existingEntry.source_hash === expectedHash) {
+        if (existingEntry.text.trim().length > 0 && !hasPlaceholderParity(sourceKey, existingEntry.text)) {
+          diagnostics.push(
+            createPlaceholderDiagnostic(key, localePlan.locale, sourceKey.text, existingEntry.text),
+          );
+        }
         continue;
       }
 

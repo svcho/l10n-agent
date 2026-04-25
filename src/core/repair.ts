@@ -1,6 +1,7 @@
 import { dirname, resolve } from 'node:path';
 
 import { loadConfig } from '../config/load.js';
+import { L10nError } from '../errors/l10n-error.js';
 import { readTextFile, writeJsonFileAtomic } from '../utils/fs.js';
 import { acquireSyncLock } from '../utils/lock.js';
 import { sortValueDeep } from '../utils/json.js';
@@ -186,107 +187,126 @@ export async function runRepair(
     dryRun?: boolean;
   } = {},
 ): Promise<RepairReport> {
-  const context = await loadRepairContext(rootDir, explicitConfigPath);
-  const diagnostics: Diagnostic[] = [];
-  const files = getRepairCandidatePaths(context);
-  const rewritten = new Map<string, unknown>();
-  let reformatted = 0;
-  let autoMerged = 0;
-
-  for (const path of files) {
-    let rawText: string;
+  const configPath = resolve(rootDir, explicitConfigPath ?? 'l10n/config.yaml');
+  let lock = null;
+  if (!options.dryRun) {
     try {
-      rawText = await readTextFile(path);
-    } catch {
-      continue;
-    }
-
-    let parsed: unknown;
-    if (hasConflictMarkers(rawText)) {
-      const variants = extractConflictVariants(rawText);
-      if (!variants) {
-        diagnostics.push({
-          code: 'L10N_E0088',
-          details: { path },
+      lock = await acquireSyncLock(dirname(configPath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new L10nError({
+          code: 'L10N_E0001',
+          details: { path: configPath },
           level: 'error',
-          next: 'Resolve the malformed git conflict markers manually, then rerun repair.',
-          summary: 'Repair could not parse conflict markers in a managed JSON file',
+          next: 'Create l10n/config.yaml or pass --config with an existing path.',
+          summary: 'Config file could not be read',
         });
-        continue;
       }
 
-      let leftParsed: unknown;
-      let rightParsed: unknown;
-      try {
-        leftParsed = JSON.parse(variants.left);
-        rightParsed = JSON.parse(variants.right);
-      } catch {
-        diagnostics.push({
-          code: 'L10N_E0088',
-          details: { path },
-          level: 'error',
-          next: 'Resolve the conflict manually; repair only auto-merges valid JSON on both sides.',
-          summary: 'Repair could not parse both conflict sides as JSON',
-        });
-        continue;
-      }
-
-      const merged = mergeJsonValues(leftParsed, rightParsed);
-      if (merged.conflictPath) {
-        diagnostics.push({
-          code: 'L10N_E0088',
-          details: {
-            conflict_path: merged.conflictPath,
-            path,
-          },
-          level: 'error',
-          next: 'Resolve the overlapping JSON edit manually, then rerun repair for canonical ordering.',
-          summary: 'Repair found overlapping JSON edits that it cannot merge safely',
-        });
-        continue;
-      }
-
-      parsed = merged.value;
-      autoMerged += 1;
-    } else {
-      try {
-        parsed = JSON.parse(rawText);
-      } catch {
-        diagnostics.push({
-          code: 'L10N_E0088',
-          details: { path },
-          level: 'error',
-          next: 'Fix the JSON syntax manually, then rerun repair.',
-          summary: 'Repair could not parse a managed JSON file',
-        });
-        continue;
-      }
-    }
-
-    const sorted = sortValueDeep(parsed);
-    const normalized = `${JSON.stringify(sorted, null, 2)}\n`;
-    if (normalized !== rawText) {
-      reformatted += 1;
-      rewritten.set(path, sorted);
+      throw error;
     }
   }
 
-  const report: RepairReport = {
-    diagnostics,
-    ok: !hasErrorDiagnostics(diagnostics),
-    summary: {
-      auto_merged: autoMerged,
-      files_scanned: files.length,
-      reformatted,
-    },
-  };
-
-  if (options.dryRun || rewritten.size === 0) {
-    return report;
-  }
-
-  const lock = await acquireSyncLock(context.l10nDir);
   try {
+    const context = await loadRepairContext(rootDir, explicitConfigPath);
+    const diagnostics: Diagnostic[] = [];
+    const files = getRepairCandidatePaths(context);
+    const rewritten = new Map<string, unknown>();
+    let reformatted = 0;
+    let autoMerged = 0;
+
+    for (const path of files) {
+      let rawText: string;
+      try {
+        rawText = await readTextFile(path);
+      } catch {
+        continue;
+      }
+
+      let parsed: unknown;
+      if (hasConflictMarkers(rawText)) {
+        const variants = extractConflictVariants(rawText);
+        if (!variants) {
+          diagnostics.push({
+            code: 'L10N_E0088',
+            details: { path },
+            level: 'error',
+            next: 'Resolve the malformed git conflict markers manually, then rerun repair.',
+            summary: 'Repair could not parse conflict markers in a managed JSON file',
+          });
+          continue;
+        }
+
+        let leftParsed: unknown;
+        let rightParsed: unknown;
+        try {
+          leftParsed = JSON.parse(variants.left);
+          rightParsed = JSON.parse(variants.right);
+        } catch {
+          diagnostics.push({
+            code: 'L10N_E0088',
+            details: { path },
+            level: 'error',
+            next: 'Resolve the conflict manually; repair only auto-merges valid JSON on both sides.',
+            summary: 'Repair could not parse both conflict sides as JSON',
+          });
+          continue;
+        }
+
+        const merged = mergeJsonValues(leftParsed, rightParsed);
+        if (merged.conflictPath) {
+          diagnostics.push({
+            code: 'L10N_E0088',
+            details: {
+              conflict_path: merged.conflictPath,
+              path,
+            },
+            level: 'error',
+            next: 'Resolve the overlapping JSON edit manually, then rerun repair for canonical ordering.',
+            summary: 'Repair found overlapping JSON edits that it cannot merge safely',
+          });
+          continue;
+        }
+
+        parsed = merged.value;
+        autoMerged += 1;
+      } else {
+        try {
+          parsed = JSON.parse(rawText);
+        } catch {
+          diagnostics.push({
+            code: 'L10N_E0088',
+            details: { path },
+            level: 'error',
+            next: 'Fix the JSON syntax manually, then rerun repair.',
+            summary: 'Repair could not parse a managed JSON file',
+          });
+          continue;
+        }
+      }
+
+      const sorted = sortValueDeep(parsed);
+      const normalized = `${JSON.stringify(sorted, null, 2)}\n`;
+      if (normalized !== rawText) {
+        reformatted += 1;
+        rewritten.set(path, sorted);
+      }
+    }
+
+    const report: RepairReport = {
+      diagnostics,
+      ok: !hasErrorDiagnostics(diagnostics),
+      summary: {
+        auto_merged: autoMerged,
+        files_scanned: files.length,
+        reformatted,
+      },
+    };
+
+    if (options.dryRun || rewritten.size === 0) {
+      return report;
+    }
+
     const timestamp = new Date().toISOString();
     const historyId = buildHistoryId(timestamp, 'repair');
     await snapshotManagedFiles(context.rootDir, context.l10nDir, historyId, files);
@@ -301,9 +321,9 @@ export async function runRepair(
         createRepairHistoryEntry(historyId, timestamp, `Repair rewrote ${rewritten.size} managed JSON files`),
       ]);
     }
-  } finally {
-    await lock.release().catch(() => undefined);
-  }
 
-  return report;
+    return report;
+  } finally {
+    await lock?.release().catch(() => undefined);
+  }
 }
