@@ -178,6 +178,59 @@ struct ReviewRegressionTests {
         #expect(settings.entry("home.saveDraft")?.localization("de")?.stringUnit?.value == "Entwurf sichern")
     }
 
+    // MARK: PR review (Codex)
+
+    @Test func reusingAnExistingKeyKeepsTheTextKeysTranslations() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\nlocales: [de, ja]\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([
+                "home.welcomeBack": TestSupport.manual("Welcome back", translations: ["ja": TestSupport.unit("おかえりなさい")]),
+                "Welcome back": ["localizations": ["de": TestSupport.unit("Willkommen zurück"), "ja": TestSupport.unit("お帰り")]],
+            ]),
+            "App/HomeView.swift": "import SwiftUI\nstruct HomeView: View { var body: some View { Text(\"Welcome back\") } }\n",
+        ])
+        let project = try Project.discover(root: root)
+        let plan = try Fixer(project: project).plan()
+        #expect(plan.items.first?.reusesExistingKey == true)
+        #expect(plan.items.first?.key == "home.welcomeBack")
+        let result = try Fixer(project: project).apply(plan)
+        #expect(result.applied.count == 1)
+        #expect(result.keysAdded.isEmpty)
+        let catalog = try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings"))
+        let entry = try #require(catalog.entry("home.welcomeBack"))
+        #expect(entry.localization("de")?.stringUnit?.value == "Willkommen zurück", "missing locale copied from the text key")
+        #expect(entry.localization("ja")?.stringUnit?.value == "おかえりなさい", "existing translation kept")
+        #expect(catalog.entry("Welcome back")?.isStale == true)
+    }
+
+    @Test func planCodeStyleMustMatchTheProject() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "App/View.swift": "func f() { label.text = \"Hello there\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        var plan = try Fixer(project: project).plan()
+        plan.codeStyle = CodeStyle.symbols.rawValue
+        #expect(throws: L10nError.self) { try Fixer(project: project).apply(plan) }
+    }
+
+    @Test func planCannotMoveKeysToAnotherTargetsCatalog() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "AppA/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "AppB/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "AppA/View.swift": "func f() { label.text = \"Hello there\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        var plan = try Fixer(project: project).plan()
+        #expect(plan.items.first?.catalog == "AppA/Localizable.xcstrings")
+        plan.items[0].catalog = "AppB/Localizable.xcstrings"
+        let result = try Fixer(project: project).apply(plan)
+        #expect(result.applied.isEmpty)
+        #expect(try StringCatalog.load(root.appendingPathComponent("AppB/Localizable.xcstrings")).keys.isEmpty)
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

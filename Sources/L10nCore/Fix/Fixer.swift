@@ -290,7 +290,12 @@ public struct Fixer {
     /// `placeholders[].specifier` and `status` are taken from the plan.
     private func applyLocked(_ plan: FixPlan, includeReview: Bool) throws -> ApplyResult {
         var result = ApplyResult(applied: [], skipped: [:], filesChanged: [], catalogsChanged: [], keysAdded: [], notes: [])
-        let usesSymbols = plan.codeStyle == CodeStyle.symbols.rawValue
+        // The rewrite style follows the project, never the plan.
+        let usesSymbols = project.usesSymbols
+        let projectStyle = usesSymbols ? CodeStyle.symbols.rawValue : CodeStyle.literal.rawValue
+        guard plan.codeStyle == projectStyle else {
+            throw L10nError.planConflict("the plan uses \(plan.codeStyle) style but the project uses \(projectStyle); re-run fix to plan again")
+        }
         let linter = Linter(project: project)
         let options = LintOptions(rules: Self.fixableRules, code: true, catalogs: false)
         let projectFiles = Set(project.swiftFiles.map { project.relativePath($0) })
@@ -345,8 +350,8 @@ public struct Fixer {
                 continue
             }
             let catalogPath = project.relativePath(catalogURL)
-            guard catalogPath.hasSuffix(".xcstrings"), projectCatalogs.contains(catalogPath) || catalogPath == expectedCatalog else {
-                result.skipped[item.id] = "catalog \(item.catalog) is not a String Catalog of this project"
+            guard catalogPath == expectedCatalog else {
+                result.skipped[item.id] = "catalog \(item.catalog) is not the catalog for this file (expected \(expectedCatalog)); re-run fix to plan again"
                 continue
             }
 
@@ -447,16 +452,23 @@ public struct Fixer {
         var added: Set<String> = []
         for item in appliedItems.sorted(by: { ($0.file, $0.range.start) < ($1.file, $1.range.start) }) {
             var target = try catalog(item.catalog)
-            guard target.entry(item.key) == nil else { continue }
-            var entry = CatalogEntry()
-            entry.extractionState = "manual"
-            entry.comment = item.comment.isEmpty ? nil : item.comment
-            entry.setLocalization(target.sourceLanguage, LocalizationNode(unit: StringUnit(state: StringUnit.State.translated, value: item.sourceValue)))
+            let isNewKey = target.entry(item.key) == nil
+            var entry: CatalogEntry
+            if let existing = target.entry(item.key) {
+                entry = existing
+            } else {
+                entry = CatalogEntry()
+                entry.extractionState = "manual"
+                entry.comment = item.comment.isEmpty ? nil : item.comment
+                entry.setLocalization(target.sourceLanguage, LocalizationNode(unit: StringUnit(state: StringUnit.State.translated, value: item.sourceValue)))
+            }
             if let migrateFrom = item.migrateFrom, migrateFrom != item.key, var old = target.entry(migrateFrom), !old.isManual {
+                // Carry existing translations of the English-text key over to the semantic key.
+                // Locales the semantic key already translates are kept as they are.
                 let oldSource = old.sourceNode(key: migrateFrom, sourceLanguage: target.sourceLanguage)
                 let sameText = oldSource.leaves.map(\.unit.value) == [item.sourceValue]
                 let newFingerprint = FingerprintStore.sourceFingerprint(entry.sourceNode(key: item.key, sourceLanguage: target.sourceLanguage))
-                for locale in old.localizationLocales where locale != target.sourceLanguage {
+                for locale in old.localizationLocales where locale != target.sourceLanguage && entry.localization(locale) == nil {
                     guard let node = old.localization(locale) else { continue }
                     entry.setLocalization(locale, node)
                     if sameText {
@@ -474,7 +486,7 @@ public struct Fixer {
                 result.notes.append("\(item.catalog): upgraded catalog format to 1.1 for generated symbols")
             }
             catalogs[item.catalog] = target
-            if added.insert("\(item.catalog)|\(item.key)").inserted {
+            if isNewKey, added.insert("\(item.catalog)|\(item.key)").inserted {
                 result.keysAdded.append(item.key)
             }
         }

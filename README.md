@@ -87,7 +87,7 @@ Interpolations become placeholders (`%@`, `%lld`). Their types are inferred from
 
 A developer's `comment:` argument becomes the catalog comment. In literal style, files inside a Swift package get `bundle: .module`.
 
-Saved plans are treated as untrusted input. `apply` re-scans every file and takes code and interpolations from the source. Only `key`, `comment`, `placeholders[].specifier` and `status` come from the plan, and catalogs must be catalogs of the project.
+Saved plans are treated as untrusted input. `apply` re-scans every file and takes code and interpolations from the source. Only `key`, `comment`, `placeholders[].specifier` and `status` come from the plan. Each key goes into the catalog computed for its file, and the code style must match the project's current setting.
 
 ## Commands
 
