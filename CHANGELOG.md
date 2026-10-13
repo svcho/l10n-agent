@@ -2,6 +2,32 @@
 
 All notable changes to `l10n-agent` are documented here.
 
+## 0.4.0 — 2026-10-09
+
+Rewrite in Swift, Apple platforms only. The String Catalog (`.xcstrings`) is now the source of truth; the TypeScript CLI, the `l10n/` JSON store and Android support are removed. See `docs/audit-and-apple-redesign.md` for the reasons (lossy round trips, placeholder argument numbering, `sync --locale` deleting other locales, among others).
+
+### New
+
+- `lint`: SwiftSyntax scanner for unlocalized UI text (L10N001), English-text keys (L10N002), concatenation and `String(format:)` (L10N003), missing keys (L10N004) and plural candidates (L10N005), plus catalog rules L10N100-L10N111. Output as text, Xcode build-phase diagnostics, JSON or SARIF. Inline `// l10n-agent:ignore` suppressions.
+- `fix`: plans and applies code + catalog fixes with semantic keys and translator comments. Uses Xcode 26 generated symbols (`Text(.key)`, table namespaces) or `String(localized:defaultValue:comment:)`. Migrates existing translations from English-text keys. Plans can be saved, edited and re-applied; apply refuses when files changed. `--llm-keys` asks the local model for key names.
+- `translate`: batched translation through Ollama or OpenAI-compatible local servers, with placeholder masking, positional reordering, CLDR plural categories, substitutions, glossary enforcement, retries with feedback, and `needs_review` output. Remote endpoints and cloud models are refused unless explicitly allowed.
+- `status`, `doctor`, `init`, `accept`, `rules`.
+- `mcp`: stdio MCP server with lint, status, plan/apply fixes, translate, set translations, add keys and accept tools.
+- Claude Code skill in `skills/apple-l10n`.
+- Catalog serialization verified byte-for-byte against `xcstringstool`; symbol naming verified against `xcstringstool generate-symbols`; fixed code type-checked against generated symbols in the test suite.
+
+### Hardening from the independent review and live model runs
+
+- Approved translations are never overwritten, not even single plural categories. Structural mismatches are reported as *approved skipped*.
+- Fixes never drop surrounding code (ternaries, `??`, `bundle:` arguments). They keep `comment:` arguments, and add `bundle: .module` inside Swift packages.
+- `fix --apply` treats plans as untrusted: it re-scans sources, restricts catalogs to the project, and touches catalogs only for applied edits.
+- Paths are confined to the project root through symlinks. Provided translations must target configured locales. Remote translators need an environment opt-in.
+- Translation requests use per-request item ids, retry one item at a time, detect shifted answers, reject plural forms that hard-code the count, and repair broken machine translations.
+
+### Removed
+
+`sync`, `check`, `dedupe`, `rename`, `rollback`, `import`, `repair`, Android `strings.xml`, `Localizable.strings`, Codex CLI provider, and the `l10n/` canonical JSON files.
+
 ## 0.3.1-beta.0 — 2026-04-25
 
 ### Correctness fixes
