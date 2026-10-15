@@ -344,11 +344,15 @@ private final class ScanVisitor: SyntaxVisitor {
         var blocking: [String] = []
         for other in call.arguments where other.id != argument.id {
             let label = other.label?.text ?? "_"
-            if label == "comment" {
-                classification.codeComment = other.expression.as(StringLiteralExprSyntax.self)?.representedLiteralValue
-                    .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            // Kept arguments must be plain literals: their values move into the catalog
+            // or the generated symbol. A dynamic table or comment cannot be recomputed.
+            guard keptLabels.contains(label), let value = other.expression.as(StringLiteralExprSyntax.self)?.representedLiteralValue else {
+                blocking.append(label)
+                continue
             }
-            if !keptLabels.contains(label) { blocking.append(label) }
+            if label == "comment" {
+                classification.codeComment = value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
+            }
         }
         if call.trailingClosure != nil { blocking.append("trailing closure") }
         classification.blockingArguments = blocking

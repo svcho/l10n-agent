@@ -47,7 +47,7 @@ public enum StatusCommand {
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 for locale in locales {
                     perLocale[locale]!.total += 1
-                    guard TranslationEngine.isComplete(entry.localization(locale), source: sourceNode, locale: locale),
+                    guard TranslationEngine.isComplete(entry.localization(locale), source: sourceNode, locale: locale, overrides: project.config.pluralCategories),
                           let leaves = entry.localization(locale)?.leaves else {
                         perLocale[locale]!.missing += 1
                         continue

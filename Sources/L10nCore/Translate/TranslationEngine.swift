@@ -99,9 +99,10 @@ public final class TranslationEngine: @unchecked Sendable {
         return Loaded(catalogs: catalogs, order: order, fingerprints: try FingerprintStore.load(root: project.root), locales: locales)
     }
 
-    func plan(_ loaded: inout Loaded, options: TranslateOptions, adoptBaselines: Bool) -> (units: [TranslationUnit], staleApproved: [TranslationIssue]) {
+    func plan(_ loaded: inout Loaded, options: TranslateOptions, adoptBaselines: Bool) -> (units: [TranslationUnit], staleApproved: [TranslationIssue], unsupported: [TranslationIssue]) {
         var units: [TranslationUnit] = []
         var staleApproved: [TranslationIssue] = []
+        var unsupported: [TranslationIssue] = []
         let keyFilter = options.keys.map(Set.init)
 
         for path in loaded.order {
@@ -120,7 +121,8 @@ public final class TranslationEngine: @unchecked Sendable {
                     let isStale = recorded != nil && recorded != fingerprint
                     var complete = true
                     var approvedNotes: Set<String> = []
-                    let categories = PluralRules.categories(for: locale)
+                    let knownCategories = PluralRules.categories(for: locale, overrides: project.config.pluralCategories)
+                    let categories = knownCategories ?? ["other"]
 
                     for shape in shapes {
                         let leaves = target?.leaves ?? []
@@ -156,6 +158,10 @@ public final class TranslationEngine: @unchecked Sendable {
                             }
                             guard !needed.isEmpty else { continue }
                             complete = false
+                            if knownCategories == nil {
+                                unsupported.append(TranslationIssue(catalog: path, key: key, locale: locale, reason: "plural categories for \(locale) are unknown; add them under pluralCategories in \(L10nConfig.fileName)"))
+                                continue
+                            }
                             units.append(TranslationUnit(
                                 id: String(units.count + 1), catalog: path, key: key, locale: locale, path: shape.path,
                                 source: nil, sourceForms: forms, categories: needed, comment: entry.comment, reason: reason
@@ -202,7 +208,7 @@ public final class TranslationEngine: @unchecked Sendable {
                 }
             }
         }
-        return (units, staleApproved)
+        return (units, staleApproved, unsupported)
     }
 
     struct UnitShape {
@@ -258,13 +264,18 @@ public final class TranslationEngine: @unchecked Sendable {
 
     /// A translation is complete when every leaf has a value and plural keys have all
     /// CLDR categories of the locale.
-    public static func isComplete(_ target: LocalizationNode?, source: LocalizationNode, locale: String) -> Bool {
+    /// Unknown languages (no CLDR entry and no override) only need an `other` form.
+    public static func isComplete(_ target: LocalizationNode?, source: LocalizationNode, locale: String, overrides: [String: [String]] = [:]) -> Bool {
         guard let target else { return false }
         let leaves = target.leaves
         if leaves.isEmpty || leaves.contains(where: \.unit.isMissing) { return false }
-        let categories = PluralRules.categories(for: locale)
-        return !unitShapes(source, path: []).contains { shape in
-            shape.forms != nil && !hasAllCategories(targetLeaves(target, shape: shape), categories: categories)
+        let categories = PluralRules.categories(for: locale, overrides: overrides) ?? ["other"]
+        return unitShapes(source, path: []).allSatisfy { shape in
+            if shape.forms != nil {
+                return hasAllCategories(targetLeaves(target, shape: shape), categories: categories)
+            }
+            // Plain shapes, including each device variation, must exist at their own path.
+            return leaves.contains { $0.path == shape.path }
         }
     }
 
@@ -279,7 +290,7 @@ public final class TranslationEngine: @unchecked Sendable {
         if options.dryRun {
             var loaded = try load(options)
             let planned = plan(&loaded, options: options, adoptBaselines: false)
-            return TranslateReport(model: model?.name, dryRun: true, planned: planned.units.count, translated: 0, perLocale: [:], failed: [], approvedSkipped: planned.staleApproved, warnings: [], units: planned.units, aborted: nil)
+            return TranslateReport(model: model?.name, dryRun: true, planned: planned.units.count, translated: 0, perLocale: [:], failed: planned.unsupported, approvedSkipped: planned.staleApproved, warnings: [], units: planned.units, aborted: nil)
         }
         guard let model else { throw L10nError.translator("No translation model configured") }
         return try await ProjectLock.withLock(root: project.root) {
@@ -290,7 +301,7 @@ public final class TranslationEngine: @unchecked Sendable {
     private func runLocked(_ options: TranslateOptions, model: ChatModel) async throws -> TranslateReport {
         var loaded = try load(options)
         let planned = plan(&loaded, options: options, adoptBaselines: true)
-        var report = TranslateReport(model: model.name, dryRun: false, planned: planned.units.count, translated: 0, perLocale: [:], failed: [], approvedSkipped: planned.staleApproved, warnings: [], units: nil, aborted: nil)
+        var report = TranslateReport(model: model.name, dryRun: false, planned: planned.units.count, translated: 0, perLocale: [:], failed: planned.unsupported, approvedSkipped: planned.staleApproved, warnings: [], units: nil, aborted: nil)
         try saveTouched(&loaded, catalogs: [])
 
         let batchSize = max(1, options.batchSize ?? project.config.translator.batchSize)
@@ -298,7 +309,7 @@ public final class TranslationEngine: @unchecked Sendable {
         // Units still outstanding per key and locale; a fingerprint is recorded once all succeed.
         var outstanding = Dictionary(grouping: planned.units, by: { "\($0.catalog)|\($0.key)|\($0.locale)" }).mapValues { Set($0.map(\.id)) }
         // Keys with approved translations that still need a human keep their old fingerprint.
-        var failedGroups: Set<String> = Set(planned.staleApproved.map { "\($0.catalog)|\($0.key)|\($0.locale)" })
+        var failedGroups: Set<String> = Set((planned.staleApproved + planned.unsupported).map { "\($0.catalog)|\($0.key)|\($0.locale)" })
         var done = 0
 
         outer: for locale in byLocale.keys.sorted() {
@@ -718,7 +729,12 @@ public final class TranslationEngine: @unchecked Sendable {
                     report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "keys with device variations or substitutions must be edited in Xcode"))
                     continue
                 }
-                let unit = TranslationUnit(id: "1", catalog: path, key: item.key, locale: item.locale, path: [], source: shape.source, sourceForms: shape.forms, categories: shape.forms == nil ? nil : PluralRules.categories(for: item.locale), comment: entry.comment, reason: "provided")
+                let categories = PluralRules.categories(for: item.locale, overrides: project.config.pluralCategories)
+                if shape.forms != nil, categories == nil {
+                    report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "plural categories for \(item.locale) are unknown; add them under pluralCategories in \(L10nConfig.fileName)"))
+                    continue
+                }
+                let unit = TranslationUnit(id: "1", catalog: path, key: item.key, locale: item.locale, path: [], source: shape.source, sourceForms: shape.forms, categories: shape.forms == nil ? nil : categories, comment: entry.comment, reason: "provided")
                 let raw: UnitResult
                 if let forms = item.forms {
                     raw = .forms(forms.mapValues { MaskedText(source: $0).text })

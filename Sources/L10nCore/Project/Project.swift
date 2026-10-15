@@ -152,6 +152,23 @@ public struct Project: Sendable {
         return localizable.first
     }
 
+    /// Catalogs a source file can see for a table. Package targets only see their own
+    /// catalogs; app files see the nearest catalog in an ancestor directory. When that is
+    /// ambiguous (several candidates, none an ancestor), all candidates are returned.
+    public func catalogURLs(forTable table: String, file: URL) -> [URL] {
+        let candidates = catalogURLs.filter { $0.deletingPathExtension().lastPathComponent == table }
+        if let target = PackageTarget.directory(for: file, root: root) {
+            return candidates.filter { $0.path.hasPrefix(target.path + "/") }
+        }
+        let appCandidates = candidates.filter { PackageTarget.directory(for: $0, root: root) == nil }
+        let filePath = file.standardizedFileURL.path
+        if let nearest = appCandidates.filter({ filePath.hasPrefix($0.deletingLastPathComponent().path + "/") })
+            .max(by: { $0.path.count < $1.path.count }) {
+            return [nearest]
+        }
+        return appCandidates
+    }
+
     public func relativePath(_ url: URL) -> String {
         PathUtil.relative(url, to: root)
     }

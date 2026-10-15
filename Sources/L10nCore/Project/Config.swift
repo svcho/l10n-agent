@@ -183,6 +183,8 @@ public struct L10nConfig: Codable, Sendable, Equatable {
     public var rules: [String: Severity]
     /// term → locale → required translation. Use the term itself to keep it untranslated.
     public var glossary: [String: [String: String]]
+    /// CLDR plural categories for languages missing from the built-in table, e.g. `{ xx: [one, few, other] }`.
+    public var pluralCategories: [String: [String]]
     public var translator: TranslatorConfig
     public var userFacing: UserFacingAPIs
 
@@ -197,6 +199,7 @@ public struct L10nConfig: Codable, Sendable, Equatable {
         keys = KeyPolicy()
         rules = [:]
         glossary = [:]
+        pluralCategories = [:]
         translator = TranslatorConfig()
         userFacing = UserFacingAPIs()
     }
@@ -219,6 +222,10 @@ public struct L10nConfig: Codable, Sendable, Equatable {
         keys = try container.decodeIfPresent(KeyPolicy.self, forKey: .keys) ?? defaults.keys
         rules = try container.decodeIfPresent([String: Severity].self, forKey: .rules) ?? defaults.rules
         glossary = try container.decodeIfPresent([String: [String: String]].self, forKey: .glossary) ?? defaults.glossary
+        pluralCategories = try container.decodeIfPresent([String: [String]].self, forKey: .pluralCategories) ?? defaults.pluralCategories
+        for (locale, categories) in pluralCategories where !PluralRules.validate(categories) {
+            throw L10nError.config("pluralCategories.\(locale) must list distinct CLDR categories (zero, one, two, few, many, other) including other")
+        }
         translator = try container.decodeIfPresent(TranslatorConfig.self, forKey: .translator) ?? defaults.translator
         userFacing = try container.decodeIfPresent(UserFacingAPIs.self, forKey: .userFacing) ?? defaults.userFacing
     }

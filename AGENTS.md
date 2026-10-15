@@ -46,7 +46,9 @@ Out of scope:
 - Translations in state `translated` are never overwritten or removed by any command, including single plural categories. Tool output is written as `needs_review`. Broken `needs_review` translations may be retranslated.
 - Format parity compares argument index and type; reordering via positional specifiers is allowed; plural cases may omit arguments.
 - Fix plans are untrusted input: apply re-scans files, matches items to fresh sites, and takes only key, comment, specifier and status from the plan. The code style and target catalog are recomputed from the project. It refuses when a file changed, verifies the rewritten file still parses, and changes catalogs only for applied edits.
-- Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`) are skipped.
+- Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`, non-literal `table:`/`comment:`) are skipped.
+- Plural categories come from the CLDR table in `PluralRules` or `pluralCategories` in the config; unknown languages are reported, never guessed.
+- L10N004 checks keys against the catalogs of the file's own target, not every catalog in the repo.
 - Fixes whose placeholder types are guessed are `needsReview` and are not applied by default.
 - Translation is local-only. Non-localhost URLs and Ollama `:cloud` models need `translator.allowRemote: true` plus `L10N_AGENT_ALLOW_REMOTE=1` in the user's environment.
 - Mutating commands hold the `flock` project lock (`.l10n-agent/lock`); the kernel releases it on exit.

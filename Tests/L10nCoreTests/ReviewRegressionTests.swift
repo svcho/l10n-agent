@@ -231,6 +231,81 @@ struct ReviewRegressionTests {
         #expect(try StringCatalog.load(root.appendingPathComponent("AppB/Localizable.xcstrings")).keys.isEmpty)
     }
 
+    @Test func dynamicTableOrCommentBlocksWholeCallRewrites() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "App/HomeView.swift": """
+            import SwiftUI
+            struct HomeView: View {
+                var body: some View {
+                    Text("Welcome dynamic", tableName: activeTable)
+                    Text("Welcome noted", comment: note)
+                    Text("Welcome literal", tableName: "Localizable", comment: "Greeting")
+                }
+            }
+            """,
+        ])
+        let plan = try Fixer(project: try Project.discover(root: root)).plan()
+        func item(_ text: String) -> FixItem? { plan.items.first { $0.sourceValue == text } }
+        #expect(item("Welcome dynamic")?.status == .skipped)
+        #expect(item("Welcome dynamic")?.reason?.contains("tableName:") == true)
+        #expect(item("Welcome noted")?.status == .skipped)
+        #expect(item("Welcome literal")?.status == .ready)
+        #expect(item("Welcome literal")?.comment == "Greeting")
+    }
+
+    @Test func missingKeyLookupIsScopedToTheFilesCatalog() throws {
+        let root = try TestSupport.makeProject([
+            "AppA/Localizable.xcstrings": TestSupport.catalogJSON(["a.title": TestSupport.manual("A")]),
+            "AppB/Localizable.xcstrings": TestSupport.catalogJSON(["b.title": TestSupport.manual("B")]),
+            "AppA/View.swift": """
+            import SwiftUI
+            struct V: View { var body: some View { VStack { Text("a.title"); Text("b.title") } } }
+            """,
+        ])
+        let report = try Linter(project: try Project.discover(root: root)).run(LintOptions(rules: ["L10N004"]))
+        #expect(report.diagnostics.map(\.key) == ["b.title"])
+    }
+
+    @Test func everyDeviceVariationMustBeTranslated() async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "L.xcstrings": TestSupport.catalogJSON([
+                "tap.hint": [
+                    "extractionState": "manual", "comment": "c",
+                    "localizations": [
+                        "en": ["variations": ["device": ["iphone": TestSupport.unit("Tap here"), "mac": TestSupport.unit("Click here")]]],
+                        "de": ["variations": ["device": ["iphone": TestSupport.unit("Hier tippen")]]],
+                    ],
+                ],
+            ]),
+        ])
+        let project = try Project.discover(root: root)
+        let lint = try Linter(project: project).run(LintOptions(rules: ["L10N101"]))
+        #expect(lint.diagnostics.first?.locales == ["de"])
+        #expect(try StatusCommand.run(project: project).catalogs.first?.locales.first?.missing == 1)
+        let planned = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(planned.units?.map(\.path) == [["variations", "device", "mac"]])
+    }
+
+    @Test func pluralCategoriesCoverCLDRAndUnknownLanguagesAreNotGuessed() async throws {
+        #expect(PluralRules.categories(for: "mt") == ["one", "two", "few", "many", "other"])
+        #expect(PluralRules.categories(for: "cy") == ["zero", "one", "two", "few", "many", "other"])
+        #expect(PluralRules.categories(for: "gd") == ["one", "two", "few", "other"])
+        #expect(PluralRules.categories(for: "xx") == nil)
+        #expect(PluralRules.categories(for: "xx-YY", overrides: ["xx": ["one", "few", "other"]]) == ["one", "few", "other"])
+
+        let source: [String: Any] = ["extractionState": "manual", "comment": "c", "localizations": ["en": ["variations": ["plural": ["one": TestSupport.unit("%lld file"), "other": TestSupport.unit("%lld files")]]]]]
+        let root = try TestSupport.makeProject([".l10n-agent.yml": "locales: [xx]\n", "L.xcstrings": TestSupport.catalogJSON(["files": source])])
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(report.planned == 0)
+        #expect(report.failed.first?.reason.contains("pluralCategories") == true)
+
+        let invalid = try TestSupport.makeProject([".l10n-agent.yml": "pluralCategories: { xx: [one, some] }\n"])
+        #expect(throws: L10nError.self) { try Project.discover(root: invalid) }
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

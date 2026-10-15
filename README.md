@@ -81,7 +81,7 @@ Interpolations become placeholders (`%@`, `%lld`). Their types are inferred from
 `fix` never rewrites code it cannot rewrite faithfully. These sites are reported as *skipped* with a reason:
 
 - the text is part of a larger expression inside `Text(...)`/`String(localized:)` (for example `Text(flag ? "On" : "Off")`)
-- the call has arguments the rewrite would drop (`bundle:`, `locale:`, `defaultValue:`)
+- the call has arguments the rewrite would drop (`bundle:`, `locale:`, `defaultValue:`, or a `table:`/`comment:` that is not a plain string literal)
 - multiline or raw literals
 - `String(format:)` and literals that already contain printf specifiers
 
@@ -154,7 +154,7 @@ translator:
 
 - Strings are sent in batches with their key and comment as context, plus your glossary.
 - Format specifiers are replaced by tokens (`⟦1⟧`, `⟦@files⟧`) before sending and restored afterwards. If the model reorders arguments, positional specifiers (`%2$lld … %1$@`) are written. Answers that drop, add or retype a placeholder are rejected and retried with feedback.
-- Plural keys get exactly the CLDR categories of the target language (`one/few/many/other` for Polish, `other` for Japanese). `%#@name@` substitutions keep their `argNum` and `formatSpecifier`.
+- Plural keys get exactly the CLDR categories of the target language (`one/few/many/other` for Polish, `other` for Japanese, `one/two/few/many/other` for Maltese). A language missing from the built-in table is never guessed: its plural keys are reported until you list its categories under `pluralCategories`. `%#@name@` substitutions keep their `argNum` and `formatSpecifier`.
 - Each request numbers its items 1…n, and retries go one item at a time. Answers that look shifted between items (different sources, identical translations) are retried individually.
 - Machine translations (`needs_review`) whose placeholders are broken are retranslated. Approved translations are never touched, not even single plural categories. They are listed under *approved skipped* when their source changed or their structure differs (for example plain text where the source is now plural).
 - Progress is written after each batch, so an interrupted run just continues where it stopped the next time.
@@ -222,6 +222,7 @@ exclude: ["**/Tests/**"]
 rules: { L10N105: off }
 glossary:
   "Acme Cloud": { de: "Acme Cloud", ja: "Acme Cloud" }
+pluralCategories: { xx: [one, few, other] }   # only for languages missing from the built-in CLDR table
 userFacing:
   functions: [{ name: PrimaryButton, labels: ["_"] }]
   properties: [headlineCopy]
