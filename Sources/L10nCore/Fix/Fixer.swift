@@ -39,7 +39,18 @@ public struct Fixer {
                 if let findingIDs, !findingIDs.contains(diagnostic.id) { continue }
                 fileHashes[relative] = Hashing.sha256(source.text)
 
-                let catalogURL = catalogURL(for: site, fileURL: url)
+                guard let catalogURL = catalogURL(for: site, fileURL: url) else {
+                    items.append(FixItem(
+                        id: diagnostic.id, rule: diagnostic.rule, file: relative, line: site.line, column: site.column,
+                        status: .skipped,
+                        reason: "several catalogs could own this file; add a catalogRoutes entry to \(L10nConfig.fileName)",
+                        original: site.originalCode, key: "", comment: "", sourceValue: site.staticText, placeholders: [],
+                        catalog: "", replacement: "", context: site.context, api: site.api, role: site.role,
+                        enclosingType: site.enclosingType, range: site.replaceRange, segments: site.segments,
+                        reusesExistingKey: false, migrateFrom: nil
+                    ))
+                    continue
+                }
                 let catalogPath = project.relativePath(catalogURL)
                 let catalog = catalogs[catalogURL] ?? StringCatalog.empty(url: catalogURL, sourceLanguage: project.sourceLanguage)
 
@@ -155,7 +166,8 @@ public struct Fixer {
     /// package targets use catalogs inside the target, app files the nearest catalog for
     /// the table. A table without a catalog yet is created next to the file's default
     /// catalog, keeping its name (`Settings.xcstrings`), never folded into Localizable.
-    func catalogURL(for site: StringSite, fileURL: URL) -> URL {
+    /// `nil` when several catalogs could own the file and nothing disambiguates them.
+    func catalogURL(for site: StringSite, fileURL: URL) -> URL? {
         let inPackage = PackageTarget.directory(for: fileURL, root: project.root) != nil
         if site.table == nil, !inPackage {
             // No explicit table: the configured catalog, else the file's default catalog
@@ -173,19 +185,16 @@ public struct Fixer {
         let table = site.table ?? "Localizable"
         let candidates = project.catalogURLs(forTable: table, file: fileURL)
         if candidates.count == 1 { return candidates[0] }
-        if candidates.count > 1 {
-            // Ambiguous: prefer the catalog sharing the longest directory prefix with the file.
-            let fileComponents = fileURL.standardizedFileURL.pathComponents
-            return candidates.max { lhs, rhs in
-                Self.sharedPrefixLength(lhs.pathComponents, fileComponents) < Self.sharedPrefixLength(rhs.pathComponents, fileComponents)
-            }!
-        }
+        // Several equally plausible catalogs: never guess (the key could land in another
+        // target's bundle). A `catalogRoutes` entry resolves it.
+        if candidates.count > 1 { return nil }
         return newCatalogDirectory(for: fileURL).appendingPathComponent("\(table).xcstrings").standardizedFileURL
     }
 
     /// Where a new catalog for `fileURL` goes: its package target, the folder of the file's
     /// default catalog, or the topmost source folder.
     func newCatalogDirectory(for fileURL: URL) -> URL {
+        if let routed = project.routedCatalogDirectory(for: fileURL) { return routed }
         if let target = PackageTarget.directory(for: fileURL, root: project.root) {
             let filePath = fileURL.standardizedFileURL.path
             let inTarget = project.catalogURLs.filter { $0.path.hasPrefix(target.path + "/") && filePath.hasPrefix($0.deletingLastPathComponent().path + "/") }
@@ -199,10 +208,6 @@ public struct Fixer {
         return firstComponent.flatMap { component -> URL? in
             component.hasSuffix(".swift") ? nil : project.root.appendingPathComponent(component)
         } ?? project.root
-    }
-
-    static func sharedPrefixLength(_ lhs: [String], _ rhs: [String]) -> Int {
-        zip(lhs, rhs).prefix { $0 == $1 }.count
     }
 
     // MARK: Code generation
@@ -380,7 +385,11 @@ public struct Fixer {
                 continue
             }
             let fileURL = project.root.appendingPathComponent(file)
-            let expectedCatalog = project.relativePath(catalogURL(for: site, fileURL: fileURL))
+            guard let expectedURL = catalogURL(for: site, fileURL: fileURL) else {
+                result.skipped[item.id] = "several catalogs could own \(item.file); add a catalogRoutes entry"
+                continue
+            }
+            let expectedCatalog = project.relativePath(expectedURL)
             guard let catalogURL = try? PathUtil.resolveInside(item.catalog, root: project.root) else {
                 result.skipped[item.id] = "catalog \(item.catalog) is outside the project"
                 continue
@@ -517,7 +526,14 @@ public struct Fixer {
                 // Carry existing translations of the English-text key over to the semantic key.
                 // Locales the semantic key already translates are kept as they are.
                 let oldSource = old.sourceNode(key: migrateFrom, sourceLanguage: target.sourceLanguage)
-                let sameText = oldSource.leaves.map(\.unit.value) == [item.sourceValue]
+                var sameText = oldSource.leaves.map(\.unit.value) == [item.sourceValue]
+                // Source-language plural/device variations move with the key, so the source
+                // language keeps its forms after the code switches to the semantic key.
+                if isNewKey, let oldSourceNode = old.localization(target.sourceLanguage),
+                   !oldSourceNode.variations.isEmpty || !oldSourceNode.substitutions.isEmpty {
+                    entry.setLocalization(target.sourceLanguage, oldSourceNode)
+                    sameText = true
+                }
                 let newFingerprint = FingerprintStore.sourceFingerprint(entry.sourceNode(key: item.key, sourceLanguage: target.sourceLanguage))
                 for locale in old.localizationLocales where locale != target.sourceLanguage {
                     guard let node = old.localization(locale) else { continue }

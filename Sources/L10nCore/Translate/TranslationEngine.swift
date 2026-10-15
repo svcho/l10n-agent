@@ -322,9 +322,9 @@ public final class TranslationEngine: @unchecked Sendable {
         let batchSize = max(1, options.batchSize ?? project.config.translator.batchSize)
         let byLocale = Dictionary(grouping: planned.units, by: \.locale)
         // Units still outstanding per key and locale; a fingerprint is recorded once all succeed.
-        var outstanding = Dictionary(grouping: planned.units, by: { "\($0.catalog)|\($0.key)|\($0.locale)" }).mapValues { Set($0.map(\.id)) }
+        var outstanding = Dictionary(grouping: planned.units, by: { GroupKey($0.catalog, $0.key, $0.locale) }).mapValues { Set($0.map(\.id)) }
         // Keys with approved translations that still need a human keep their old fingerprint.
-        var failedGroups: Set<String> = Set((planned.staleApproved + planned.unsupported).map { "\($0.catalog)|\($0.key)|\($0.locale)" })
+        var failedGroups: Set<GroupKey> = Set((planned.staleApproved + planned.unsupported).map { GroupKey($0.catalog, $0.key, $0.locale) })
         var done = 0
 
         outer: for locale in byLocale.keys.sorted() {
@@ -342,14 +342,14 @@ public final class TranslationEngine: @unchecked Sendable {
                 var touched: Set<String> = []
                 for (unit, problem) in outcome.failures {
                     report.failed.append(TranslationIssue(catalog: unit.catalog, key: unit.key, locale: unit.locale, reason: problem))
-                    failedGroups.insert("\(unit.catalog)|\(unit.key)|\(unit.locale)")
+                    failedGroups.insert(GroupKey(unit.catalog, unit.key, unit.locale))
                 }
                 for (unit, result) in outcome.results {
                     write(result, for: unit, into: &loaded)
                     touched.insert(unit.catalog)
                     report.translated += 1
                     report.perLocale[locale, default: 0] += 1
-                    let group = "\(unit.catalog)|\(unit.key)|\(unit.locale)"
+                    let group = GroupKey(unit.catalog, unit.key, unit.locale)
                     outstanding[group]?.remove(unit.id)
                     if outstanding[group]?.isEmpty == true, !failedGroups.contains(group),
                        let catalog = loaded.catalogs[unit.catalog], let entry = catalog.entry(unit.key) {
@@ -389,6 +389,19 @@ public final class TranslationEngine: @unchecked Sendable {
         }
         if !current.isEmpty { batches.append(current) }
         return batches
+    }
+
+    /// Catalog + byte-exact key + locale.
+    struct GroupKey: Hashable {
+        let catalog: String
+        let key: ByteKey
+        let locale: String
+
+        init(_ catalog: String, _ key: String, _ locale: String) {
+            self.catalog = catalog
+            self.key = ByteKey(key)
+            self.locale = locale
+        }
     }
 
     // MARK: Model round trips

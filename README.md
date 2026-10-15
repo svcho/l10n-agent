@@ -209,6 +209,8 @@ Copy `skills/apple-l10n` to `~/.claude/skills/` (or `.claude/skills/` in your ap
 sourceLanguage: en
 locales: [de, ja, pl]               # default: the Xcode project's knownRegions
 catalog: App/Localizable.xcstrings  # where new keys go (default: nearest Localizable.xcstrings)
+catalogRoutes:                      # only for layouts the tool cannot infer (e.g. Sources/X + Resources/X)
+  - { files: "Sources/Shared/**", catalog: "Resources/Shared/Localizable.xcstrings" }
 codeStyle: auto                     # auto | symbols | literal
 semanticKeys: true
 keys:

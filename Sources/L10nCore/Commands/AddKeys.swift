@@ -34,10 +34,16 @@ public enum AddKeysCommand {
                 let catalogPath: String
                 if let explicit = item.catalog {
                     catalogPath = project.relativePath(try PathUtil.resolveInside(explicit, root: project.root))
-                } else if let url = project.defaultCatalogURL(for: nil) {
+                } else if let configured = project.config.catalog {
+                    catalogPath = configured
+                } else if let url = InitCommand.unambiguousCatalog(project) {
                     catalogPath = project.relativePath(url)
-                } else {
+                } else if project.catalogURLs.isEmpty {
                     catalogPath = "Localizable.xcstrings"
+                } else {
+                    let candidates = project.catalogURLs.map(project.relativePath).joined(separator: ", ")
+                    result.rejected[item.key] = "several catalogs could hold this key (\(candidates)); set catalog"
+                    continue
                 }
                 guard catalogPath.hasSuffix(".xcstrings") else {
                     result.rejected[item.key] = "catalog must be an .xcstrings file"

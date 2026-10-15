@@ -126,7 +126,7 @@ public struct L10nMCPServer: Sendable {
         ),
         Tool(
             name: "l10n_add_keys",
-            description: "Add manual keys to a String Catalog before writing code that uses them. Returns the generated Swift symbol for each key when symbol generation is enabled (use Text(.symbol) / String(localized: .symbol)).",
+            description: "Add manual keys to a String Catalog before writing code that uses them. Returns the generated Swift symbol for each key when symbol generation is enabled (use Text(.symbol) / String(localized: .symbol)). Set catalog when the project has several catalogs.",
             inputSchema: schema([
                 "keys": .object([
                     "type": "array",

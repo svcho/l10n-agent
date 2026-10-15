@@ -74,6 +74,7 @@ public struct Project: Sendable {
         }
         let config = try L10nConfig.load(root: root)
         let includeMatchers = config.include.map(Glob.init)
+        let resolvedRoot = root.resolvingSymlinksInPath().path
         let excludeMatchers = config.exclude.map(Glob.init)
 
         var catalogs: [URL] = []
@@ -102,6 +103,10 @@ public struct Project: Sendable {
             }
             if excludeMatchers.contains(where: { $0.matches(relative) }) { continue }
             if !includeMatchers.isEmpty, !includeMatchers.contains(where: { $0.matches(relative) }) { continue }
+            // Symlinked files must resolve inside the project; nothing outside it is read.
+            guard ["swift", "xcstrings"].contains(url.pathExtension),
+                  url.resolvingSymlinksInPath().path.hasPrefix(resolvedRoot + "/")
+            else { continue }
             switch url.pathExtension {
             case "xcstrings": catalogs.append(url.standardizedFileURL)
             case "swift":
@@ -202,6 +207,9 @@ public struct Project: Sendable {
     /// ambiguous (several candidates, none an ancestor), all candidates are returned.
     public func catalogURLs(forTable table: String, file: URL) -> [URL] {
         let candidates = catalogURLs.filter { $0.deletingPathExtension().lastPathComponent == table }
+        if let routed = routedCatalogDirectory(for: file) {
+            return candidates.filter { $0.deletingLastPathComponent().standardizedFileURL.path == routed.path }
+        }
         if let target = PackageTarget.directory(for: file, root: root) {
             return candidates.filter { $0.path.hasPrefix(target.path + "/") }
         }
@@ -220,13 +228,30 @@ public struct Project: Sendable {
             // keep the catalogs whose folder shares the longest path prefix with the file.
             let owned = appCandidates.filter { $0.path.hasPrefix(owner) }
             let fileComponents = file.standardizedFileURL.deletingLastPathComponent().pathComponents
-            let shared = owned.map { catalog in
-                (catalog, zip(catalog.deletingLastPathComponent().pathComponents, fileComponents).prefix { $0 == $1 }.count)
+            let fileNames = Set(fileComponents).subtracting(Self.genericFolderNames)
+            // Rank by shared path prefix, then by matching folder names
+            // (Sources/FeatureA ↔ Resources/FeatureA). Remaining ties stay ambiguous.
+            let scored = owned.map { catalog -> (URL, Int, Int) in
+                let components = catalog.deletingLastPathComponent().pathComponents
+                let prefix = zip(components, fileComponents).prefix { $0 == $1 }.count
+                let overlap = Set(components.dropFirst(prefix)).intersection(fileNames).count
+                return (catalog, prefix, overlap)
             }
-            guard let best = shared.map(\.1).max() else { return [] }
-            return shared.filter { $0.1 == best }.map(\.0)
+            guard let best = scored.map({ ($0.1, $0.2) }).max(by: { $0 < $1 }) else { return [] }
+            return scored.filter { ($0.1, $0.2) == best }.map(\.0)
         }
         return appCandidates
+    }
+
+    static let genericFolderNames: Set<String> = [
+        "Sources", "Source", "Resources", "Resource", "src", "res", "Shared", "Localization", "Localizations", "Supporting Files",
+    ]
+
+    /// The catalog folder an explicit `catalogRoutes` entry assigns to `file`, if any.
+    public func routedCatalogDirectory(for file: URL) -> URL? {
+        let relative = relativePath(file)
+        guard let route = config.catalogRoutes.first(where: { Glob($0.files).matches(relative) }) else { return nil }
+        return root.appendingPathComponent(route.catalog).deletingLastPathComponent().standardizedFileURL
     }
 
     public func relativePath(_ url: URL) -> String {

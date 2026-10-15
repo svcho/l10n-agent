@@ -168,12 +168,22 @@ public struct UserFacingAPIs: Codable, Sendable, Equatable {
     }
 }
 
+/// Explicit catalog ownership for layouts the tool cannot infer, e.g. a shared project with
+/// `Sources/FeatureA` and `Resources/FeatureA/Localizable.xcstrings`.
+public struct CatalogRoute: Codable, Sendable, Equatable {
+    /// Glob of source files (relative to the project root), e.g. `Sources/FeatureA/**`.
+    public var files: String
+    /// A catalog in the folder that holds this target's catalogs, e.g. `Resources/FeatureA/Localizable.xcstrings`.
+    public var catalog: String
+}
+
 public struct L10nConfig: Codable, Sendable, Equatable {
     public static let fileName = ".l10n-agent.yml"
 
     public var sourceLanguage: String?
     public var locales: [String]?
     public var catalog: String?
+    public var catalogRoutes: [CatalogRoute]
     public var include: [String]
     public var exclude: [String]
     public var codeStyle: CodeStyle
@@ -192,6 +202,7 @@ public struct L10nConfig: Codable, Sendable, Equatable {
         sourceLanguage = nil
         locales = nil
         catalog = nil
+        catalogRoutes = []
         include = []
         exclude = []
         codeStyle = .auto
@@ -215,6 +226,7 @@ public struct L10nConfig: Codable, Sendable, Equatable {
         sourceLanguage = try container.decodeIfPresent(String.self, forKey: .sourceLanguage)
         locales = try container.decodeIfPresent([String].self, forKey: .locales)
         catalog = try container.decodeIfPresent(String.self, forKey: .catalog)
+        catalogRoutes = try container.decodeIfPresent([CatalogRoute].self, forKey: .catalogRoutes) ?? defaults.catalogRoutes
         include = try container.decodeIfPresent([String].self, forKey: .include) ?? defaults.include
         exclude = try container.decodeIfPresent([String].self, forKey: .exclude) ?? defaults.exclude
         codeStyle = try container.decodeIfPresent(CodeStyle.self, forKey: .codeStyle) ?? defaults.codeStyle

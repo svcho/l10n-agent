@@ -60,7 +60,7 @@ Out of scope:
 - Provided plural translations may fill categories next to approved ones; approved categories are ignored, never overwritten.
 - Only conditions that require `DEBUG` (`DEBUG`, `DEBUG && X`, `A || B` with both requiring it) are skipped by the scanner.
 - Plural categories come from the CLDR table in `PluralRules` or `pluralCategories` in the config; unknown languages are reported, never guessed.
-- Catalog lookups are scoped to the file's own target (package target, nearest ancestor catalog, else the owning `.xcodeproj` folder): L10N004 checks only those catalogs, and fixes for a named table use (or create) that table there instead of another target's catalog or `Localizable`.
+- Catalog lookups are scoped to the file's own target (`catalogRoutes`, package target, nearest ancestor catalog, else the owning `.xcodeproj` folder ranked by shared prefix and folder names). When several catalogs remain, fixes are skipped and `l10n_add_keys` requires `catalog`; the tool never guesses. Discovered symlinks must resolve inside the project. L10N004 checks only those catalogs, and fixes for a named table use (or create) that table there instead of another target's catalog or `Localizable`.
 - Glossary terms (L10N108) are checked in every variation whose source uses the term.
 - Fixes whose placeholder types are guessed are `needsReview` and are not applied by default.
 - Translation is local-only. Non-localhost URLs and Ollama `:cloud` models need `translator.allowRemote: true` plus `L10N_AGENT_ALLOW_REMOTE=1` in the user's environment.

@@ -863,6 +863,90 @@ struct ReviewRegressionTests {
         #expect(try FingerprintStore.load(root: valid).fingerprint(catalog: "L.xcstrings", key: "k", locale: "de") == "abc")
     }
 
+    @Test func discoveryIgnoresSymlinksThatLeaveTheProject() throws {
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("outside-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try "func f() { label.text = \"Private text\" }\n".write(to: outside.appendingPathComponent("Secret.swift"), atomically: true, encoding: .utf8)
+        try TestSupport.catalogJSON([:]).write(to: outside.appendingPathComponent("Other.xcstrings"), atomically: true, encoding: .utf8)
+        let root = try TestSupport.makeProject(["App/View.swift": "func f() { label.text = \"Inside text\" }\n"])
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("App/Leak.swift"), withDestinationURL: outside.appendingPathComponent("Secret.swift"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("App/Leak.xcstrings"), withDestinationURL: outside.appendingPathComponent("Other.xcstrings"))
+        let project = try Project.discover(root: root)
+        #expect(project.swiftFiles.map(project.relativePath) == ["App/View.swift"])
+        #expect(project.catalogURLs.isEmpty)
+    }
+
+    @Test func migrationKeepsSourceLanguageVariations() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([
+                "%lld items": ["localizations": [
+                    "en": ["variations": ["plural": ["one": TestSupport.unit("One item"), "other": TestSupport.unit("%lld items")]]],
+                    "de": ["variations": ["plural": ["one": TestSupport.unit("Ein Element"), "other": TestSupport.unit("%lld Elemente")]]],
+                ]],
+            ]),
+            "App/HomeView.swift": "import SwiftUI\nstruct HomeView: View { let count = 2; var body: some View { Text(\"\\(count) items\") } }\n",
+        ])
+        let project = try Project.discover(root: root)
+        var plan = try Fixer(project: project).plan()
+        plan.items[0].status = .ready
+        _ = try Fixer(project: project).apply(plan)
+        let entry = try #require(try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings")).entry(plan.items[0].key))
+        let en = Dictionary(uniqueKeysWithValues: (entry.localization("en")?.leaves ?? []).map { ($0.path.last ?? "", $0.unit.value) })
+        #expect(en["one"] == "One item")
+        #expect(en["other"] == "%lld items")
+    }
+
+    @Test func addKeysRejectsAmbiguousCatalogs() throws {
+        let root = try TestSupport.makeProject([
+            "AppA/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "AppB/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+        ])
+        let project = try Project.discover(root: root)
+        let result = try AddKeysCommand.run(project: project, keys: [NewKey(key: "home.title", value: "Home")])
+        #expect(result.added.isEmpty)
+        #expect(result.rejected["home.title"]?.contains("set catalog") == true)
+        let explicit = try AddKeysCommand.run(project: project, keys: [NewKey(key: "home.title", value: "Home", catalog: "AppB/Localizable.xcstrings")])
+        #expect(explicit.added == ["home.title"])
+    }
+
+    @Test func splitSourcesAndResourcesAreMatchedByFolderNameOrRoutes() throws {
+        let root = try TestSupport.makeProject([
+            "App.xcodeproj/project.pbxproj": "// stub\n",
+            "Sources/FeatureA/View.swift": "func f() { label.text = \"Feature A text\" }\n",
+            "Resources/FeatureA/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "Resources/FeatureB/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "Sources/Shared/Util.swift": "func g() { label.text = \"Shared text\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        let file = root.appendingPathComponent("Sources/FeatureA/View.swift")
+        #expect(project.catalogURLs(forTable: "Localizable", file: file).map(project.relativePath) == ["Resources/FeatureA/Localizable.xcstrings"])
+
+        // Sources/Shared matches neither feature: fix skips it instead of guessing.
+        let plan = try Fixer(project: project).plan()
+        #expect(plan.items.first { $0.file == "Sources/Shared/Util.swift" }?.reason?.contains("catalogRoutes") == true)
+
+        try "catalogRoutes:\n  - files: \"Sources/Shared/**\"\n    catalog: \"Resources/FeatureB/Localizable.xcstrings\"\n".write(to: root.appendingPathComponent(L10nConfig.fileName), atomically: true, encoding: .utf8)
+        let routed = try Fixer(project: try Project.discover(root: root)).plan()
+        #expect(routed.items.first { $0.file == "Sources/Shared/Util.swift" }?.catalog == "Resources/FeatureB/Localizable.xcstrings")
+    }
+
+    @Test func byteDistinctKeysGetTheirOwnFingerprints() async throws {
+        let precomposed = "caf\u{E9}.title"
+        let decomposed = "cafe\u{301}.title"
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "L.xcstrings": "{\"sourceLanguage\":\"en\",\"version\":\"1.1\",\"strings\":{"
+                + "\"\(precomposed)\":{\"comment\":\"c\",\"extractionState\":\"manual\",\"localizations\":{\"en\":{\"stringUnit\":{\"state\":\"translated\",\"value\":\"One\"}}}},"
+                + "\"\(decomposed)\":{\"comment\":\"c\",\"extractionState\":\"manual\",\"localizations\":{\"en\":{\"stringUnit\":{\"state\":\"translated\",\"value\":\"Two\"}}}}}}",
+        ])
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(batchSize: 1), model: EchoTranslator(transform: { _, text in "DE " + text }).model())
+        #expect(report.translated == 2)
+        let store = try FingerprintStore.load(root: root)
+        #expect(store.fingerprint(catalog: "L.xcstrings", key: precomposed, locale: "de") != nil)
+        #expect(store.fingerprint(catalog: "L.xcstrings", key: decomposed, locale: "de") != nil)
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {
