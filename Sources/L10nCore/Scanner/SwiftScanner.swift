@@ -206,6 +206,14 @@ private final class ScanVisitor: SyntaxVisitor {
         }
         guard letters >= 2 else { return }
         reportedConcatenations.insert(root.position.utf8Offset)
+        // Inside a call with other arguments (`Text("Hi " + name, tableName: "Settings")`)
+        // the outer arguments would no longer fit the rewritten String expression.
+        var unfixable: String?
+        if let call = context.replaceWholeCall, call.arguments.count > 1 || call.trailingClosure != nil {
+            unfixable = "the concatenation is inside \(context.api) with other arguments; rewrite manually"
+        } else if context.table != nil {
+            unfixable = "the concatenation uses a named table; rewrite manually"
+        }
         sites.append(makeSite(
             node: Syntax(root),
             replaceNode: Syntax(root),
@@ -217,7 +225,7 @@ private final class ScanVisitor: SyntaxVisitor {
             key: nil,
             table: nil,
             hasDefaultValue: false,
-            unfixableReason: nil,
+            unfixableReason: unfixable,
             codeComment: nil
         ))
     }

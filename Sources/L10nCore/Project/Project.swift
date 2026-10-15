@@ -24,10 +24,15 @@ public struct XcodeSettings: Equatable, Sendable {
     }
 
     /// The `.xcodeproj` whose folder is the nearest ancestor of `file`, or the only project.
+    /// `nil` when several projects sit in the same nearest folder and ownership cannot be told.
     public func owningProject(for file: URL) -> URL? {
         let filePath = file.standardizedFileURL.path
         let owners = projectFiles.filter { filePath.hasPrefix($0.deletingLastPathComponent().path + "/") }
-        return owners.max(by: { $0.path.count < $1.path.count }) ?? (projectFiles.count == 1 ? projectFiles[0] : nil)
+        guard let deepest = owners.map({ $0.deletingLastPathComponent().path.count }).max() else {
+            return projectFiles.count == 1 ? projectFiles[0] : nil
+        }
+        let nearest = owners.filter { $0.deletingLastPathComponent().path.count == deepest }
+        return nearest.count == 1 ? nearest[0] : nil
     }
 
     public static func read(projects: [URL]) -> XcodeSettings {

@@ -947,6 +947,35 @@ struct ReviewRegressionTests {
         #expect(store.fingerprint(catalog: "L.xcstrings", key: decomposed, locale: "de") != nil)
     }
 
+    @Test func concatenationsInsideCallsWithOtherArgumentsAreNotRewritten() {
+        let sites = SwiftScanner().scan(source: """
+        import SwiftUI
+        struct V: View { var body: some View { VStack {
+            Text("Hello there " + name, tableName: "Settings")
+            Text("Welcome back " + name)
+        } } }
+        """, path: "App/V.swift")
+        let named = sites.first { $0.displayText.hasPrefix("Hello there") }
+        let plain = sites.first { $0.displayText.hasPrefix("Welcome back") }
+        #expect(named?.kind == .concatenation)
+        #expect(named?.fixable == false)
+        #expect(plain?.fixable == true)
+    }
+
+    @Test func colocatedProjectsDoNotDecideSymbolGeneration() throws {
+        let root = try TestSupport.makeProject([
+            "AppA.xcodeproj/project.pbxproj": "STRING_CATALOG_GENERATE_SYMBOLS = YES;\n",
+            "AppB.xcodeproj/project.pbxproj": "// symbols off\n",
+            "Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "Shared/View.swift": "func f() { label.text = \"Shared title\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        let file = root.appendingPathComponent("Shared/View.swift")
+        #expect(project.xcode.owningProject(for: file) == nil)
+        #expect(!project.usesSymbols(for: file))
+        #expect(try Fixer(project: project).plan().items.first?.replacement.contains("defaultValue:") == true)
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {
