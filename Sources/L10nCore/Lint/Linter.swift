@@ -287,10 +287,19 @@ public struct Linter {
                             if !identical.contains(locale) { identical.append(locale) }
                         }
                     }
-                    for (term, translations) in project.config.glossary {
-                        guard let required = translations[locale], sourceText.range(of: term, options: .caseInsensitive) != nil else { continue }
-                        if !leaves.contains(where: { $0.unit.value.range(of: required, options: .caseInsensitive) != nil }) {
-                            add(Rules.glossary, "Translation \(locale) of \"\(key)\" should use \"\(required)\" for \"\(term)\"", key: key, locales: [locale])
+                    for (term, translations) in project.config.glossary.sorted(by: { $0.key < $1.key }) {
+                        guard let required = translations[locale] else { continue }
+                        // Every variation whose source uses the term must use the required translation.
+                        let violating = leaves.filter { leaf in
+                            guard let match = FormatParity.sourceLeaf(for: leaf.path, in: sourceNode),
+                                  match.leaf.value.range(of: term, options: .caseInsensitive) != nil
+                            else { return false }
+                            return leaf.unit.value.range(of: required, options: .caseInsensitive) == nil
+                        }
+                        if !violating.isEmpty {
+                            let where_ = violating.map(\.label).filter { !$0.isEmpty }
+                            let scope = where_.isEmpty ? "" : " (\(where_.joined(separator: ", ")))"
+                            add(Rules.glossary, "Translation \(locale) of \"\(key)\"\(scope) should use \"\(required)\" for \"\(term)\"", key: key, locales: [locale])
                         }
                     }
                 }

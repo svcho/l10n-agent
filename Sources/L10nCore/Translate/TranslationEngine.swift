@@ -129,6 +129,12 @@ public final class TranslationEngine: @unchecked Sendable {
                         let underShape = leaves.filter { Array($0.path.prefix(shape.path.count)) == shape.path }
 
                         if let forms = shape.forms {
+                            // Never guess plural rules: unknown languages are reported, whatever the target holds.
+                            if knownCategories == nil {
+                                unsupported.append(TranslationIssue(catalog: path, key: key, locale: locale, reason: "plural categories for \(locale) are unknown; add them under pluralCategories in \(L10nConfig.fileName)"))
+                                complete = false
+                                continue
+                            }
                             // A plain approved translation where the source is plural: leave it to a human.
                             if underShape.contains(where: { $0.path == shape.path && $0.unit.isApproved }) {
                                 approvedNotes.insert("the approved translation has no plural variations; add them in Xcode")
@@ -158,10 +164,6 @@ public final class TranslationEngine: @unchecked Sendable {
                             }
                             guard !needed.isEmpty else { continue }
                             complete = false
-                            if knownCategories == nil {
-                                unsupported.append(TranslationIssue(catalog: path, key: key, locale: locale, reason: "plural categories for \(locale) are unknown; add them under pluralCategories in \(L10nConfig.fileName)"))
-                                continue
-                            }
                             units.append(TranslationUnit(
                                 id: String(units.count + 1), catalog: path, key: key, locale: locale, path: shape.path,
                                 source: nil, sourceForms: forms, categories: needed, comment: entry.comment, reason: reason
@@ -264,14 +266,16 @@ public final class TranslationEngine: @unchecked Sendable {
 
     /// A translation is complete when every leaf has a value and plural keys have all
     /// CLDR categories of the locale.
-    /// Unknown languages (no CLDR entry and no override) only need an `other` form.
+    /// Plural keys of languages with unknown categories (no CLDR entry, no override) are
+    /// never considered complete.
     public static func isComplete(_ target: LocalizationNode?, source: LocalizationNode, locale: String, overrides: [String: [String]] = [:]) -> Bool {
         guard let target else { return false }
         let leaves = target.leaves
         if leaves.isEmpty || leaves.contains(where: \.unit.isMissing) { return false }
-        let categories = PluralRules.categories(for: locale, overrides: overrides) ?? ["other"]
+        let categories = PluralRules.categories(for: locale, overrides: overrides)
         return unitShapes(source, path: []).allSatisfy { shape in
             if shape.forms != nil {
+                guard let categories else { return false }
                 return hasAllCategories(targetLeaves(target, shape: shape), categories: categories)
             }
             // Plain shapes, including each device variation, must exist at their own path.

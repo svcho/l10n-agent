@@ -306,6 +306,70 @@ struct ReviewRegressionTests {
         #expect(throws: L10nError.self) { try Project.discover(root: invalid) }
     }
 
+    @Test func namedTablesResolveWithinTheFilesTarget() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "AppA/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "AppA/Settings.xcstrings": TestSupport.catalogJSON([:]),
+            "AppB/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "AppB/Settings.xcstrings": TestSupport.catalogJSON([:]),
+            "AppB/View.swift": """
+            import SwiftUI
+            struct V: View { var body: some View { VStack {
+                Text("Sync settings now", tableName: "Settings")
+                Text("Start onboarding now", tableName: "Onboarding")
+            } } }
+            """,
+        ])
+        let project = try Project.discover(root: root)
+        let plan = try Fixer(project: project).plan()
+        let settings = try #require(plan.items.first { $0.sourceValue == "Sync settings now" })
+        let onboarding = try #require(plan.items.first { $0.sourceValue == "Start onboarding now" })
+        #expect(settings.catalog == "AppB/Settings.xcstrings")
+        #expect(onboarding.catalog == "AppB/Onboarding.xcstrings", "a new table keeps its name and lives in the file's target")
+        #expect(onboarding.replacement.contains(#"table: "Onboarding""#))
+        let result = try Fixer(project: project).apply(plan)
+        #expect(result.applied.count == 2)
+        #expect(try StringCatalog.load(root.appendingPathComponent("AppA/Settings.xcstrings")).keys.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("AppB/Onboarding.xcstrings").path))
+    }
+
+    @Test func unknownPluralRulesAreReportedEvenWithAnOtherForm() async throws {
+        let source: [String: Any] = [
+            "extractionState": "manual", "comment": "c",
+            "localizations": [
+                "en": ["variations": ["plural": ["one": TestSupport.unit("%lld file"), "other": TestSupport.unit("%lld files")]]],
+                "xx": ["variations": ["plural": ["other": TestSupport.unit("%lld fileo", state: "needs_review")]]],
+            ],
+        ]
+        let root = try TestSupport.makeProject([".l10n-agent.yml": "locales: [xx]\n", "L.xcstrings": TestSupport.catalogJSON(["files": source])])
+        let project = try Project.discover(root: root)
+        let report = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(report.failed.first?.reason.contains("pluralCategories") == true)
+        #expect(try Linter(project: project).run(LintOptions(rules: ["L10N101"])).diagnostics.first?.locales == ["xx"])
+
+        let configured = try TestSupport.makeProject([".l10n-agent.yml": "locales: [xx]\npluralCategories: { xx: [other] }\n", "L.xcstrings": TestSupport.catalogJSON(["files": source])])
+        #expect(try Linter(project: try Project.discover(root: configured)).run(LintOptions(rules: ["L10N101"])).diagnostics.isEmpty)
+    }
+
+    @Test func glossaryIsCheckedInEveryVariation() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\nglossary: { \"Acme Cloud\": { de: \"Acme Cloud\" } }\n",
+            "L.xcstrings": TestSupport.catalogJSON([
+                "sync.files": [
+                    "extractionState": "manual", "comment": "c",
+                    "localizations": [
+                        "en": ["variations": ["plural": ["one": TestSupport.unit("%lld file in Acme Cloud"), "other": TestSupport.unit("%lld files in Acme Cloud")]]],
+                        "de": ["variations": ["plural": ["one": TestSupport.unit("%lld Datei in Acme Cloud"), "other": TestSupport.unit("%lld Dateien in der Wolke")]]],
+                    ],
+                ],
+            ]),
+        ])
+        let findings = try Linter(project: try Project.discover(root: root)).run(LintOptions(rules: ["L10N108"])).diagnostics
+        #expect(findings.count == 1)
+        #expect(findings.first?.message.contains("plural.other") == true)
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

@@ -149,30 +149,58 @@ public struct Fixer {
         PackageTarget.directory(for: file, root: project.root) != nil
     }
 
+    /// The catalog a site's key belongs to, always resolved within the file's own target:
+    /// package targets use catalogs inside the target, app files the nearest catalog for
+    /// the table. A table without a catalog yet is created next to the file's default
+    /// catalog, keeping its name (`Settings.xcstrings`), never folded into Localizable.
     func catalogURL(for site: StringSite, fileURL: URL) -> URL {
-        // Package targets bundle their own resources: keep their catalogs inside the target.
+        let inPackage = PackageTarget.directory(for: fileURL, root: project.root) != nil
+        if site.table == nil, !inPackage {
+            // No explicit table: the configured catalog, else the file's default catalog
+            // (nearest Localizable.xcstrings, or the project's only catalog).
+            if let configured = project.config.catalog {
+                return project.root.appendingPathComponent(configured).standardizedFileURL
+            }
+            let localizable = project.catalogURLs(forTable: "Localizable", file: fileURL)
+            if localizable.count == 1 { return localizable[0] }
+            if localizable.isEmpty, let fallback = project.defaultCatalogURL(for: fileURL),
+               PackageTarget.directory(for: fallback, root: project.root) == nil {
+                return fallback
+            }
+        }
+        let table = site.table ?? "Localizable"
+        let candidates = project.catalogURLs(forTable: table, file: fileURL)
+        if candidates.count == 1 { return candidates[0] }
+        if candidates.count > 1 {
+            // Ambiguous: prefer the catalog sharing the longest directory prefix with the file.
+            let fileComponents = fileURL.standardizedFileURL.pathComponents
+            return candidates.max { lhs, rhs in
+                Self.sharedPrefixLength(lhs.pathComponents, fileComponents) < Self.sharedPrefixLength(rhs.pathComponents, fileComponents)
+            }!
+        }
+        return newCatalogDirectory(for: fileURL).appendingPathComponent("\(table).xcstrings").standardizedFileURL
+    }
+
+    /// Where a new catalog for `fileURL` goes: its package target, the folder of the file's
+    /// default catalog, or the topmost source folder.
+    func newCatalogDirectory(for fileURL: URL) -> URL {
         if let target = PackageTarget.directory(for: fileURL, root: project.root) {
-            let inTarget = project.catalogURLs.filter { $0.path.hasPrefix(target.path + "/") }
-            if let table = site.table, let match = inTarget.first(where: { $0.deletingPathExtension().lastPathComponent == table }) {
-                return match
-            }
             let filePath = fileURL.standardizedFileURL.path
-            if let nearest = inTarget.filter({ $0.lastPathComponent == "Localizable.xcstrings" && filePath.hasPrefix($0.deletingLastPathComponent().path + "/") })
-                .max(by: { $0.path.count < $1.path.count }) {
-                return nearest
-            }
-            return target.appendingPathComponent("Localizable.xcstrings").standardizedFileURL
+            let inTarget = project.catalogURLs.filter { $0.path.hasPrefix(target.path + "/") && filePath.hasPrefix($0.deletingLastPathComponent().path + "/") }
+            return inTarget.max(by: { $0.path.count < $1.path.count })?.deletingLastPathComponent() ?? target
         }
-        if let table = site.table, let match = project.catalogURLs.first(where: { $0.deletingPathExtension().lastPathComponent == table }) {
-            return match
+        let localizable = project.catalogURLs(forTable: "Localizable", file: fileURL)
+        if localizable.count == 1 {
+            return localizable[0].deletingLastPathComponent()
         }
-        if let url = project.defaultCatalogURL(for: fileURL) { return url }
-        // No catalog yet: create Localizable.xcstrings next to the topmost source folder.
         let firstComponent = project.relativePath(fileURL).split(separator: "/").first.map(String.init)
-        let directory = firstComponent.flatMap { component -> URL? in
+        return firstComponent.flatMap { component -> URL? in
             component.hasSuffix(".swift") ? nil : project.root.appendingPathComponent(component)
         } ?? project.root
-        return directory.appendingPathComponent("Localizable.xcstrings").standardizedFileURL
+    }
+
+    static func sharedPrefixLength(_ lhs: [String], _ rhs: [String]) -> Int {
+        zip(lhs, rhs).prefix { $0 == $1 }.count
     }
 
     // MARK: Code generation
