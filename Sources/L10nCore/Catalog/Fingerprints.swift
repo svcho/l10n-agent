@@ -76,6 +76,10 @@ public struct FingerprintStore: Sendable {
     }
 
     public func save() throws {
+        try AtomicFile.write(serialized(), to: url)
+    }
+
+    public func serialized() -> Data {
         var catalogs = JSONObject()
         for (catalog, keys) in entries {
             var keyObject = JSONObject()
@@ -85,7 +89,7 @@ public struct FingerprintStore: Sendable {
             catalogs[catalog] = .object(keyObject)
         }
         let root = JSONValue.object(JSONObject(["catalogs": .object(catalogs), "version": .number("1")]))
-        try AtomicFile.write(XcodeJSONWriter.string(root) + "\n", to: url)
+        return Data((XcodeJSONWriter.string(root) + "\n").utf8)
     }
 
     /// Fingerprint of a key's source-language content (all variation values, not the comment).

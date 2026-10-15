@@ -23,6 +23,35 @@ public enum L10nError: Error, CustomStringConvertible, Equatable {
     }
 }
 
+/// Groups several atomic file writes so they can be undone together.
+public struct FileTransaction {
+    private var undo: [(url: URL, original: Data?)] = []
+
+    public init() {}
+
+    /// Writes `data` unless the file already has exactly this content. Returns whether it wrote.
+    @discardableResult
+    public mutating func write(_ data: Data, to url: URL) throws -> Bool {
+        let original = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        guard original != data else { return false }
+        try AtomicFile.write(data, to: url)
+        undo.append((url, original))
+        return true
+    }
+
+    /// Restores every written file to its previous content (or removes files that did not exist).
+    public mutating func rollBack() {
+        for step in undo.reversed() {
+            if let original = step.original {
+                try? AtomicFile.write(original, to: step.url)
+            } else {
+                try? FileManager.default.removeItem(at: step.url)
+            }
+        }
+        undo.removeAll()
+    }
+}
+
 public enum AtomicFile {
     /// Writes via a temporary file in the same directory and renames it into place.
     public static func write(_ data: Data, to url: URL) throws {
@@ -153,9 +182,13 @@ public struct SourceText: Equatable, Sendable {
         return SourceText(text: text, hasBOM: hasBOM)
     }
 
-    public func write(to url: URL) throws {
+    public var data: Data {
         var data = hasBOM ? Data([0xEF, 0xBB, 0xBF]) : Data()
         data.append(Data(text.utf8))
+        return data
+    }
+
+    public func write(to url: URL) throws {
         try AtomicFile.write(data, to: url)
     }
 }

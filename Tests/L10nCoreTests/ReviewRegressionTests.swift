@@ -1030,6 +1030,31 @@ struct ReviewRegressionTests {
         #expect(report.approvedSkipped.first?.reason.contains("finish them in Xcode") == true)
     }
 
+    @Test func failedApplyRollsBackEveryWrittenFile() throws {
+        let catalogJSON = TestSupport.catalogJSON([:])
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\ncatalog: Localizable.xcstrings\n",
+            "Localizable.xcstrings": catalogJSON,
+            "App/A.swift": "func a() { label.text = \"First title\" }\n",
+            "Locked/B.swift": "func b() { label.text = \"Second title\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        let plan = try Fixer(project: project).plan()
+        #expect(plan.items.count == 2)
+        let catalogBefore = try Data(contentsOf: root.appendingPathComponent("Localizable.xcstrings"))
+
+        // Make the second file's folder read-only so its atomic write fails after the
+        // catalog and the first source file were already written.
+        let locked = root.appendingPathComponent("Locked")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+
+        #expect(throws: (any Error).self) { try Fixer(project: project).apply(plan) }
+        #expect(try Data(contentsOf: root.appendingPathComponent("Localizable.xcstrings")) == catalogBefore, "catalog restored")
+        #expect(try String(contentsOf: root.appendingPathComponent("App/A.swift"), encoding: .utf8) == "func a() { label.text = \"First title\" }\n", "first file restored")
+        #expect(!FileManager.default.fileExists(atPath: FingerprintStore.path(root: root).path), "no fingerprints left behind")
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

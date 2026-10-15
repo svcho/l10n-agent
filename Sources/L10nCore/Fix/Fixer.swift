@@ -469,8 +469,9 @@ public struct Fixer {
         // broken fingerprints file cannot leave code pointing at keys that were never added.
         var fingerprints = try FingerprintStore.load(root: project.root)
 
-        // 2. Rewrite code, last edit first so earlier offsets stay valid.
+        // 2. Compute the rewritten code (in memory), last edit first so offsets stay valid.
         var appliedItems: [FixItem] = []
+        var pendingSources: [String: SourceText] = [:]
         for (file, entries) in Dictionary(grouping: accepted, by: { $0.item.file }).sorted(by: { $0.key < $1.key }) {
             guard let source = sources[file] else { continue }
             var bytes = Array(source.text.utf8)
@@ -492,7 +493,7 @@ public struct Fixer {
                 continue
             }
             guard !fileItems.isEmpty else { continue }
-            try SourceText(text: updated, hasBOM: source.hasBOM).write(to: try PathUtil.resolveInside(file, root: project.root))
+            pendingSources[file] = SourceText(text: updated, hasBOM: source.hasBOM)
             result.filesChanged.append(file)
             appliedItems += fileItems
         }
@@ -503,8 +504,9 @@ public struct Fixer {
         if appliedItems.contains(where: { $0.migrateFrom != nil }) {
             let scanner = SwiftScanner(userFacing: project.config.userFacing)
             for url in project.swiftFiles {
-                guard let source = try? SourceText.read(url) else { continue }
-                for site in scanner.scan(source: source.text, path: project.relativePath(url)) where site.kind == .localizedText || site.kind == .localizedKey {
+                let relative = project.relativePath(url)
+                guard let source = pendingSources[relative] ?? (try? SourceText.read(url)) else { continue }
+                for site in scanner.scan(source: source.text, path: relative) where site.kind == .localizedText || site.kind == .localizedKey {
                     if let key = site.key { referencedTextKeys.insert(CatalogKey(catalog: site.table ?? "Localizable", key: ByteKey(key))) }
                 }
             }
@@ -565,15 +567,24 @@ public struct Fixer {
             }
         }
 
-        for (path, catalog) in catalogs.sorted(by: { $0.key < $1.key }) {
-            let original = FileManager.default.fileExists(atPath: catalog.url.path) ? try Data(contentsOf: catalog.url) : nil
-            if original != catalog.serialized() {
-                try catalog.write()
-                result.catalogsChanged.append(path)
+        // 4. Commit: catalogs and fingerprints first, then code. If any write fails, every
+        // file written so far is restored, so code never points at keys that were not added.
+        var transaction = FileTransaction()
+        do {
+            for (path, catalog) in catalogs.sorted(by: { $0.key < $1.key }) {
+                if try transaction.write(catalog.serialized(), to: catalog.url) {
+                    result.catalogsChanged.append(path)
+                }
             }
-        }
-        if !result.catalogsChanged.isEmpty {
-            try fingerprints.save()
+            if !result.catalogsChanged.isEmpty {
+                _ = try transaction.write(fingerprints.serialized(), to: fingerprints.url)
+            }
+            for (file, source) in pendingSources.sorted(by: { $0.key < $1.key }) {
+                _ = try transaction.write(source.data, to: try PathUtil.resolveInside(file, root: project.root))
+            }
+        } catch {
+            transaction.rollBack()
+            throw error
         }
         for created in result.catalogsChanged where !projectCatalogs.contains(created) {
             let url = project.root.appendingPathComponent(created)
