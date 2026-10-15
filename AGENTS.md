@@ -41,11 +41,12 @@ Out of scope:
 
 ## Behavioral rules (keep these true)
 
-- Catalog writes must be byte-identical to Xcode's output for the same content. Unknown fields round-trip. Keys are compared by exact bytes, never normalized.
+- Catalog writes must be byte-identical to Xcode's output for the same content. Unknown fields round-trip. Keys are compared by exact bytes, never normalized (use `ByteKey` for key sets and maps).
 - Symbol names must match `xcstringstool generate-symbols`; non-`Localizable` tables are namespaced (`.Settings.key`).
 - Translations in state `translated` are never overwritten or removed by any command, including single plural categories. Tool output is written as `needs_review`. Broken `needs_review` translations may be retranslated.
 - Format parity compares argument index and type; reordering via positional specifiers is allowed; plural cases may omit arguments.
 - Fix plans are untrusted input: apply re-scans files, matches items to fresh sites, and takes only key, comment, specifier and status from the plan. The code style and target catalog are recomputed from the project. It refuses when a file changed, verifies the rewritten file still parses, and changes catalogs only for applied edits.
+- Rewrites keep declared types: literals typed `LocalizedStringResource` become a resource expression; `LocalizedStringKey`-typed literals are skipped. Literal-style resources in packages use `bundle: .atURL(Bundle.module.bundleURL)`.
 - Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`, non-literal `table:`/`comment:`) are skipped.
 - With `codeStyle: auto`, symbol rewrites are decided per file: only files of an `.xcodeproj` that enables symbol generation in every configuration get symbols; package targets and mixed projects get literals.
 - `apply` loads every piece of state that can fail (catalogs, fingerprints) before writing any source file; `init` holds one lock for all its writes.

@@ -138,7 +138,8 @@ public struct Linter {
         let scanner = SwiftScanner(userFacing: project.config.userFacing)
         var diagnostics: [Diagnostic] = []
         let files = selectedSwiftFiles(options.files)
-        let keysByCatalog = Dictionary(catalogs.map { ($0.url.standardizedFileURL, Set($0.keys)) }, uniquingKeysWith: { first, _ in first })
+        // Keys are compared by exact bytes, like Xcode does.
+        let keysByCatalog = Dictionary(catalogs.map { ($0.url.standardizedFileURL, Set($0.keys.map(ByteKey.init))) }, uniquingKeysWith: { first, _ in first })
 
         for url in files {
             let source = try String(contentsOf: url, encoding: .utf8)
@@ -146,10 +147,10 @@ public struct Linter {
             let suppressions = Suppressions(source: source)
             let sites = scanner.scan(source: source, path: relative)
             // Keys this file can resolve, per table, from the catalogs of its own target.
-            var keysByTable: [String: Set<String>] = [:]
+            var keysByTable: [String: Set<ByteKey>] = [:]
             for table in Set(sites.map { $0.table ?? "Localizable" }) {
                 keysByTable[table] = project.catalogURLs(forTable: table, file: url)
-                    .reduce(into: Set<String>()) { $0.formUnion(keysByCatalog[$1.standardizedFileURL] ?? []) }
+                    .reduce(into: Set<ByteKey>()) { $0.formUnion(keysByCatalog[$1.standardizedFileURL] ?? []) }
             }
             for site in sites {
                 for diagnostic in codeDiagnostics(for: site, keysByTable: keysByTable, options: options)
@@ -161,7 +162,7 @@ public struct Linter {
         return (diagnostics, files.count)
     }
 
-    func codeDiagnostics(for site: StringSite, keysByTable: [String: Set<String>], options: LintOptions) -> [Diagnostic] {
+    func codeDiagnostics(for site: StringSite, keysByTable: [String: Set<ByteKey>], options: LintOptions) -> [Diagnostic] {
         var result: [Diagnostic] = []
         func add(_ rule: RuleInfo, _ message: String, fixable: Bool) {
             guard enabled(rule, options) else { return }
@@ -177,7 +178,7 @@ public struct Linter {
         case .localizedKey:
             if let key = site.key, !site.hasDefaultValue {
                 let table = site.table ?? "Localizable"
-                if !(keysByTable[table]?.contains(key) ?? false) {
+                if !(keysByTable[table]?.contains(ByteKey(key)) ?? false) {
                     add(Rules.missingKey, "Key \"\(key)\" is not defined in \(table).xcstrings", fixable: false)
                 }
             }

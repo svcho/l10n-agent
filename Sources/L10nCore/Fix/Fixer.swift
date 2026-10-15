@@ -229,15 +229,20 @@ public struct Fixer {
             switch item.context {
             case .swiftUIText: return "Text(\(reference))"
             case .resourceCall: return "LocalizedStringResource\(reference)"
+            // The declaration's type gives the implicit member its context.
+            case .resourceValue: return reference
             case .swiftUIKey, .string, .stringLocalizedCall, .nsLocalizedCall: return "String(localized: \(reference))"
             }
         }
         let literal = swiftLiteral(item.segments)
-        let tableArgument = (table == "Localizable" ? "" : ", table: \(swiftLiteral([.text(table)]))") + (moduleBundle ? ", bundle: .module" : "")
+        let isResource = item.context == .resourceCall || item.context == .resourceValue
+        // `String(localized:bundle:)` takes a Bundle; LocalizedStringResource takes a BundleDescription.
+        let bundleArgument = moduleBundle ? (isResource ? ", bundle: .atURL(Bundle.module.bundleURL)" : ", bundle: .module") : ""
+        let tableArgument = (table == "Localizable" ? "" : ", table: \(swiftLiteral([.text(table)]))") + bundleArgument
         let commentArgument = item.comment.isEmpty ? "" : ", comment: \(swiftLiteral([.text(item.comment)]))"
         let keyLiteral = swiftLiteral([.text(item.key)])
         switch item.context {
-        case .resourceCall:
+        case .resourceCall, .resourceValue:
             return "LocalizedStringResource(\(keyLiteral), defaultValue: \(literal)\(tableArgument)\(commentArgument))"
         case .swiftUIText:
             return "Text(String(localized: \(keyLiteral), defaultValue: \(literal)\(tableArgument)\(commentArgument)))"

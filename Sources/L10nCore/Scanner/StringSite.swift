@@ -33,6 +33,9 @@ public enum ReplacementContext: String, Equatable, Sendable, Codable {
     case stringLocalizedCall
     /// Replace the whole `LocalizedStringResource(...)` call.
     case resourceCall
+    /// A literal initializing or returned as a declared `LocalizedStringResource`;
+    /// replace the literal with a `LocalizedStringResource` expression.
+    case resourceValue
     /// Replace the whole `NSLocalizedString(...)` call.
     case nsLocalizedCall
 }

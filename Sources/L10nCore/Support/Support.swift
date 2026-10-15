@@ -168,3 +168,20 @@ enum UTF8Text {
         return text.utf8.elementsEqual(bytes) ? text : nil
     }
 }
+
+/// A string compared and hashed by its exact UTF-8 bytes. Swift's `String` treats
+/// canonically equivalent spellings (`é` vs `e\u{301}`) as equal; Xcode does not, so
+/// catalog key sets and maps use this wrapper.
+public struct ByteKey: Hashable, Comparable, Sendable {
+    public let string: String
+    private let bytes: [UInt8]
+
+    public init(_ string: String) {
+        self.string = string
+        self.bytes = Array(string.utf8)
+    }
+
+    public static func == (lhs: ByteKey, rhs: ByteKey) -> Bool { lhs.bytes == rhs.bytes }
+    public func hash(into hasher: inout Hasher) { hasher.combine(bytes) }
+    public static func < (lhs: ByteKey, rhs: ByteKey) -> Bool { lhs.bytes.lexicographicallyPrecedes(rhs.bytes) }
+}

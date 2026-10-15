@@ -7,8 +7,8 @@ import Foundation
 /// Stored at `.l10n-agent/fingerprints.json`; commit it with the catalogs.
 public struct FingerprintStore: Sendable {
     public let url: URL
-    /// catalog path (relative to root) → key → locale → source fingerprint
-    public private(set) var entries: [String: [String: [String: String]]]
+    /// catalog path (relative to root) → key (byte-exact) → locale → source fingerprint
+    public private(set) var entries: [String: [ByteKey: [String: String]]]
 
     public static func path(root: URL) -> URL {
         root.appendingPathComponent(".l10n-agent/fingerprints.json")
@@ -20,12 +20,12 @@ public struct FingerprintStore: Sendable {
             return FingerprintStore(url: url, entries: [:])
         }
         let value = try JSONParser.parse(Data(contentsOf: url))
-        var entries: [String: [String: [String: String]]] = [:]
+        var entries: [String: [ByteKey: [String: String]]] = [:]
         for catalog in value["catalogs"]?.objectValue?.members ?? [] {
             for key in catalog.value.objectValue?.members ?? [] {
                 for locale in key.value.objectValue?.members ?? [] {
                     if let hash = locale.value.stringValue {
-                        entries[catalog.key, default: [:]][key.key, default: [:]][locale.key] = hash
+                        entries[catalog.key, default: [:]][ByteKey(key.key), default: [:]][locale.key] = hash
                     }
                 }
             }
@@ -34,19 +34,19 @@ public struct FingerprintStore: Sendable {
     }
 
     public func fingerprint(catalog: String, key: String, locale: String) -> String? {
-        entries[catalog]?[key]?[locale]
+        entries[catalog]?[ByteKey(key)]?[locale]
     }
 
     public mutating func set(catalog: String, key: String, locale: String, fingerprint: String) {
-        entries[catalog, default: [:]][key, default: [:]][locale] = fingerprint
+        entries[catalog, default: [:]][ByteKey(key), default: [:]][locale] = fingerprint
     }
 
     public mutating func remove(catalog: String, key: String, locale: String? = nil) {
         if let locale {
-            entries[catalog]?[key]?[locale] = nil
-            if entries[catalog]?[key]?.isEmpty == true { entries[catalog]?[key] = nil }
+            entries[catalog]?[ByteKey(key)]?[locale] = nil
+            if entries[catalog]?[ByteKey(key)]?.isEmpty == true { entries[catalog]?[ByteKey(key)] = nil }
         } else {
-            entries[catalog]?[key] = nil
+            entries[catalog]?[ByteKey(key)] = nil
         }
     }
 
@@ -54,8 +54,8 @@ public struct FingerprintStore: Sendable {
     public mutating func prune(catalog: String, existing: (String, String) -> Bool) {
         guard let keys = entries[catalog] else { return }
         for (key, locales) in keys {
-            for locale in locales.keys where !existing(key, locale) {
-                remove(catalog: catalog, key: key, locale: locale)
+            for locale in locales.keys where !existing(key.string, locale) {
+                remove(catalog: catalog, key: key.string, locale: locale)
             }
         }
         if entries[catalog]?.isEmpty == true { entries[catalog] = nil }
@@ -66,7 +66,7 @@ public struct FingerprintStore: Sendable {
         for (catalog, keys) in entries {
             var keyObject = JSONObject()
             for (key, locales) in keys {
-                keyObject[key] = .object(JSONObject(locales.map { JSONObject.Member(key: $0.key, value: .string($0.value)) }))
+                keyObject[key.string] = .object(JSONObject(locales.map { JSONObject.Member(key: $0.key, value: .string($0.value)) }))
             }
             catalogs[catalog] = .object(keyObject)
         }

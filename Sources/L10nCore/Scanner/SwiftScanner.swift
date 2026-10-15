@@ -164,6 +164,8 @@ private final class ScanVisitor: SyntaxVisitor {
         } else if context.replaceWholeCall != nil, expression.id != ExprSyntax(literal).id {
             // e.g. Text(flag ? "On" : "Off"): replacing the whole call would drop the rest.
             unfixable = "the text is part of a larger expression inside \(context.api); rewrite manually"
+        } else if let reason = context.unfixable {
+            unfixable = reason
         } else if !context.blockingArguments.isEmpty {
             unfixable = "\(context.api) uses \(context.blockingArguments.map { $0 + ":" }.joined(separator: ", ")) which the rewrite cannot keep"
         } else if !hasInterpolation, FormatSpecifier.hasArguments(staticText) {
@@ -270,6 +272,8 @@ private final class ScanVisitor: SyntaxVisitor {
         /// Arguments of a whole-call replacement that would be lost (`bundle:`, `locale:`, …).
         var blockingArguments: [String] = []
         var codeComment: String?
+        /// Set when the site is detected but cannot be rewritten safely.
+        var unfixable: String?
     }
 
     private func classify(_ expression: ExprSyntax) -> Classification? {
@@ -313,8 +317,13 @@ private final class ScanVisitor: SyntaxVisitor {
     private func classifyNamedValue(_ name: String, type: TypeSyntax?) -> Classification? {
         if let type {
             let typeName = type.trimmedDescription
-            if typeName == "LocalizedStringKey" || typeName == "LocalizedStringResource" {
-                return Classification(kind: .localizedText, replacement: .swiftUIKey, api: name, role: roleForName(name))
+            if typeName == "LocalizedStringResource" {
+                return Classification(kind: .localizedText, replacement: .resourceValue, api: name, role: roleForName(name))
+            }
+            if typeName == "LocalizedStringKey" {
+                var classification = Classification(kind: .localizedText, replacement: .swiftUIKey, api: name, role: roleForName(name))
+                classification.unfixable = "a LocalizedStringKey value cannot hold a generated symbol or String; change the type to LocalizedStringResource first"
+                return classification
             }
             guard ["String", "String?", "String!"].contains(typeName) else { return nil }
         }

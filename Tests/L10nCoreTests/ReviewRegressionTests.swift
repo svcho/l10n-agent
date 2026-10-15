@@ -630,6 +630,59 @@ struct ReviewRegressionTests {
         }
     }
 
+    @Test func typedLocalizedDeclarationsGetTypeCorrectRewrites() throws {
+        let source = """
+        import SwiftUI
+        struct HomeView {
+            let title: LocalizedStringResource = "Welcome home"
+            var subtitle: LocalizedStringResource { "Good to see you" }
+            let key: LocalizedStringKey = "Plain key text"
+        }
+        """
+        let literal = try TestSupport.makeProject([".l10n-agent.yml": "codeStyle: literal\n", "App/Localizable.xcstrings": TestSupport.catalogJSON([:]), "App/HomeView.swift": source])
+        let literalPlan = try Fixer(project: try Project.discover(root: literal)).plan()
+        func item(_ plan: FixPlan, _ text: String) -> FixItem? { plan.items.first { $0.sourceValue == text } }
+        #expect(item(literalPlan, "Welcome home")?.replacement.hasPrefix("LocalizedStringResource(\"home.") == true)
+        #expect(item(literalPlan, "Plain key text")?.status == .skipped)
+
+        let symbols = try TestSupport.makeProject([".l10n-agent.yml": "codeStyle: symbols\n", "App/Localizable.xcstrings": TestSupport.catalogJSON([:]), "App/HomeView.swift": source])
+        let symbolPlan = try Fixer(project: try Project.discover(root: symbols)).plan()
+        #expect(item(symbolPlan, "Welcome home")?.replacement.hasPrefix(".home") == true)
+        #expect(item(symbolPlan, "Good to see you")?.replacement.hasPrefix(".home") == true)
+
+        // The literal-style rewrite type-checks.
+        let project = try Project.discover(root: literal)
+        _ = try Fixer(project: project).apply(literalPlan)
+        if TestSupport.hasXcstringstool {
+            let file = literal.appendingPathComponent("App/HomeView.swift").path
+            let (status, output) = TestSupport.shell(["xcrun", "--sdk", "macosx", "swiftc", "-typecheck", "-target", "arm64-apple-macos14", file])
+            #expect(status == 0, "\(output)")
+        }
+    }
+
+    @Test func keyLookupsAndFingerprintsAreByteExact() throws {
+        let precomposed = "caf\u{E9}.title"
+        let decomposed = "cafe\u{301}.title"
+        #expect(precomposed == decomposed, "Swift considers them equal")
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([
+                precomposed: TestSupport.manual("Cafe", translations: ["de": TestSupport.unit("Café")]),
+            ]),
+            "App/View.swift": "import SwiftUI\nstruct V: View { var body: some View { Text(\"cafe\\u{301}.title\") } }\n",
+        ])
+        let lint = try Linter(project: try Project.discover(root: root)).run(LintOptions(rules: ["L10N004"]))
+        #expect(lint.diagnostics.count == 1, "the decomposed key is not in the catalog")
+
+        var store = try FingerprintStore.load(root: root)
+        store.set(catalog: "App/Localizable.xcstrings", key: precomposed, locale: "de", fingerprint: "aaa")
+        store.set(catalog: "App/Localizable.xcstrings", key: decomposed, locale: "de", fingerprint: "bbb")
+        try store.save()
+        let loaded = try FingerprintStore.load(root: root)
+        #expect(loaded.fingerprint(catalog: "App/Localizable.xcstrings", key: precomposed, locale: "de") == "aaa")
+        #expect(loaded.fingerprint(catalog: "App/Localizable.xcstrings", key: decomposed, locale: "de") == "bbb")
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {
