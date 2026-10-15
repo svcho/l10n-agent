@@ -18,7 +18,8 @@ public enum InitCommand {
 
         // Detect settings (and probe a local model) before taking the lock.
         let needsConfig = !FileManager.default.fileExists(atPath: configURL.path) || force
-        let catalogs = (try? project.loadCatalogs()) ?? []
+        // A malformed catalog stops init before anything is written.
+        let catalogs = try project.loadCatalogs()
         let locales = project.targetLocales(catalogs: catalogs)
         var detectedModel = model
         if needsConfig, detectedModel == nil, let baseURL = URL(string: project.config.translator.baseURL), HTTP.isLocal(baseURL),

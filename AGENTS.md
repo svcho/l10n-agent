@@ -54,7 +54,8 @@ Out of scope:
 - L10N110 and fix-time symbol checks apply only where symbols are generated (per catalog / per rewritten file).
 - Plural translations are restored and validated against their own source form (`other` only for categories the source lacks).
 - The JSON parser accepts only RFC 8259 numbers; malformed or blank catalogs are reported (L10N100), never rewritten. Only nonexistent catalog paths start empty.
-- `init` writes `catalog:` only when the project has a single candidate catalog.
+- `init` validates all catalogs before writing anything and writes `catalog:` only when the project has a single candidate catalog.
+- A key/locale fingerprint is only re-stamped when no approved translation of it was left unreviewed.
 - Migrating translations into an existing key merges only the leaves it lacks; existing leaves always win.
 - Provided plural translations may fill categories next to approved ones; approved categories are ignored, never overwritten.
 - Only conditions that require `DEBUG` (`DEBUG`, `DEBUG && X`, `A || B` with both requiring it) are skipped by the scanner.

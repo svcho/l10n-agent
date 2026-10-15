@@ -770,6 +770,64 @@ struct ReviewRegressionTests {
         #expect(byCategory["other"] == "%lld Dateien", "missing leaf merged from the text key")
     }
 
+    @Test func initRefusesMalformedCatalogsBeforeWriting() async throws {
+        let root = try TestSupport.makeProject(["App/Localizable.xcstrings": "{ broken"])
+        await #expect(throws: L10nError.self) { _ = try await InitCommand.run(root: root, model: "none") }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(L10nConfig.fileName).path))
+    }
+
+    @Test func providedFormsKeepStalenessOfApprovedNeighbors() throws {
+        let catalogPath = "L.xcstrings"
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            catalogPath: TestSupport.catalogJSON([
+                "files": [
+                    "extractionState": "manual", "comment": "c",
+                    "localizations": [
+                        "en": ["variations": ["plural": ["one": TestSupport.unit("%lld file"), "other": TestSupport.unit("%lld files")]]],
+                        "de": ["variations": ["plural": ["one": TestSupport.unit("%lld Datei")]]],
+                    ],
+                ],
+            ]),
+        ])
+        _ = try TranslationEngine(project: try Project.discover(root: root)).accept(keys: nil, locales: nil)
+        // The source changes after "one" was approved.
+        var catalog = try StringCatalog.load(root.appendingPathComponent(catalogPath))
+        var entry = catalog.entry("files")!
+        var en = entry.localization("en")!
+        en.setUnit(StringUnit(state: "translated", value: "%lld document"), at: ["variations", "plural", "one"])
+        entry.setLocalization("en", en)
+        catalog.setEntry("files", entry)
+        try catalog.write()
+
+        let report = try TranslationEngine(project: try Project.discover(root: root)).applyProvided([
+            ProvidedTranslation(key: "files", locale: "de", forms: ["other": "%lld Dateien"]),
+        ])
+        #expect(report.translated == 1)
+        let stale = try Linter(project: try Project.discover(root: root)).run(LintOptions(rules: ["L10N103"]))
+        #expect(stale.diagnostics.first?.key == "files", "the approved form was not reviewed against the new source")
+    }
+
+    @Test func plannedAssignmentsAreByteExact() throws {
+        let precomposed = "caf\u{E9}.title"
+        let decomposed = "cafe\u{301}.title"
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "App/Localizable.xcstrings": "{\"sourceLanguage\":\"en\",\"version\":\"1.1\",\"strings\":{"
+                + "\"\(precomposed)\":{\"comment\":\"c\",\"extractionState\":\"manual\",\"localizations\":{\"en\":{\"stringUnit\":{\"state\":\"translated\",\"value\":\"Coffee time\"}}}},"
+                + "\"\(decomposed)\":{\"comment\":\"c\",\"extractionState\":\"manual\",\"localizations\":{\"en\":{\"stringUnit\":{\"state\":\"translated\",\"value\":\"Tea time\"}}}}}}",
+            "App/View.swift": "func f() { a.text = \"Coffee time\"; b.text = \"Tea time\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        var plan = try Fixer(project: project).plan()
+        let coffee = try #require(plan.items.firstIndex { $0.sourceValue == "Coffee time" })
+        let tea = try #require(plan.items.firstIndex { $0.sourceValue == "Tea time" })
+        plan.items[coffee].key = precomposed
+        plan.items[tea].key = decomposed
+        let result = try Fixer(project: project).apply(plan)
+        #expect(result.applied.count == 2, "\(result.skipped)")
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

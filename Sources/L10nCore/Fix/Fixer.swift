@@ -26,8 +26,8 @@ public struct Fixer {
         let suggester = KeySuggester(policy: project.config.keys)
 
         var items: [FixItem] = []
-        var plannedKeys: [String: [String: String]] = [:]   // catalog → key → sourceValue
-        var plannedGroups: [String: String] = [:]             // catalog|scope|role|sourceValue → key
+        var plannedKeys: [String: [ByteKey: String]] = [:]   // catalog → key → sourceValue
+        var plannedGroups: [PlannedGroup: String] = [:]       // same catalog, scope, role and text → key
         var fileHashes: [String: String] = [:]
 
         for url in linter.selectedSwiftFiles(files) {
@@ -63,7 +63,7 @@ public struct Fixer {
                 if let existing = catalog.entries.first(where: { $0.entry.isManual && scopeMatches($0.key) && $0.entry.localization(catalog.sourceLanguage)?.stringUnit?.value == sourceValue && symbolIsClean($0.key) }) {
                     key = existing.key
                     reuses = true
-                } else if let planned = plannedGroups["\(catalogPath)|\(suggester.effectiveScope(for: site))|\(site.role)|\(sourceValue)"] {
+                } else if let planned = plannedGroups[PlannedGroup(catalog: catalogPath, scope: suggester.effectiveScope(for: site), role: site.role, sourceValue: ByteKey(sourceValue))] {
                     key = planned
                 }
 
@@ -73,13 +73,13 @@ public struct Fixer {
                 }
 
                 let existingSymbols = Set(catalog.entries.filter { $0.entry.isManual }.compactMap { SymbolNaming.bareName(for: $0.key) })
-                    .union((plannedKeys[catalogPath] ?? [:]).keys.compactMap { SymbolNaming.bareName(for: $0) })
+                    .union((plannedKeys[catalogPath] ?? [:]).keys.compactMap { SymbolNaming.bareName(for: $0.string) })
                 let finalKey = key ?? suggester.suggest(for: site) { candidate in
-                    catalog.contains(candidate) || plannedKeys[catalogPath]?[candidate] != nil
+                    catalog.contains(candidate) || plannedKeys[catalogPath]?[ByteKey(candidate)] != nil
                         || (fileUsesSymbols && existingSymbols.contains(SymbolNaming.bareName(for: candidate) ?? candidate))
                 }
-                plannedKeys[catalogPath, default: [:]][finalKey] = sourceValue
-                plannedGroups["\(catalogPath)|\(suggester.effectiveScope(for: site))|\(site.role)|\(sourceValue)"] = finalKey
+                plannedKeys[catalogPath, default: [:]][ByteKey(finalKey)] = sourceValue
+                plannedGroups[PlannedGroup(catalog: catalogPath, scope: suggester.effectiveScope(for: site), role: site.role, sourceValue: ByteKey(sourceValue))] = finalKey
 
                 var comment = site.codeComment ?? suggester.comment(for: site, placeholders: placeholders)
                 if let migrateFrom, let existingComment = catalog.entry(migrateFrom)?.comment, !existingComment.isEmpty {
@@ -366,7 +366,8 @@ public struct Fixer {
 
         // 1. Validate items against the fresh scan and the catalogs.
         var accepted: [(item: FixItem, catalogPath: String)] = []
-        var assignedValues: [String: String] = [:] // catalog|key → sourceValue
+        // (catalog, byte-exact key) → sourceValue
+        var assignedValues: [CatalogKey: String] = [:]
         for var item in plan.items {
             let eligible = item.status == .ready || (includeReview && item.status == .needsReview)
             guard eligible else {
@@ -430,7 +431,7 @@ public struct Fixer {
                 result.skipped[item.id] = "key \"\(item.key)\" cannot generate a Swift symbol"
                 continue
             }
-            let assignmentKey = "\(catalogPath)|\(item.key)"
+            let assignmentKey = CatalogKey(catalog: catalogPath, key: ByteKey(item.key))
             if let assigned = assignedValues[assignmentKey] {
                 if assigned != item.sourceValue {
                     result.skipped[item.id] = "key \"\(item.key)\" is planned twice with different text"
@@ -444,7 +445,7 @@ public struct Fixer {
             }
             if fileUsesSymbols, let symbol = SymbolNaming.bareName(for: item.key) {
                 let clashes = target.entries.contains { $0.entry.isManual && $0.key != item.key && SymbolNaming.bareName(for: $0.key) == symbol }
-                    || assignedValues.keys.contains { $0.hasPrefix(catalogPath + "|") && $0 != assignmentKey && SymbolNaming.bareName(for: String($0.dropFirst(catalogPath.count + 1))) == symbol }
+                    || assignedValues.keys.contains { $0.catalog == catalogPath && $0 != assignmentKey && SymbolNaming.bareName(for: $0.key.string) == symbol }
                 if clashes {
                     result.skipped[item.id] = "key \"\(item.key)\" generates the same Swift symbol as another key"
                     continue
@@ -489,17 +490,17 @@ public struct Fixer {
 
         // 3. Catalog changes, only for code edits that were applied.
         // English-text keys still used by code that was not rewritten stay live.
-        var referencedTextKeys: Set<String> = []
+        var referencedTextKeys: Set<CatalogKey> = []   // table + byte-exact key
         if appliedItems.contains(where: { $0.migrateFrom != nil }) {
             let scanner = SwiftScanner(userFacing: project.config.userFacing)
             for url in project.swiftFiles {
                 guard let source = try? SourceText.read(url) else { continue }
                 for site in scanner.scan(source: source.text, path: project.relativePath(url)) where site.kind == .localizedText || site.kind == .localizedKey {
-                    if let key = site.key { referencedTextKeys.insert("\(site.table ?? "Localizable")|\(key)") }
+                    if let key = site.key { referencedTextKeys.insert(CatalogKey(catalog: site.table ?? "Localizable", key: ByteKey(key))) }
                 }
             }
         }
-        var added: Set<String> = []
+        var added: Set<CatalogKey> = []
         for item in appliedItems.sorted(by: { ($0.file, $0.range.start) < ($1.file, $1.range.start) }) {
             var target = try catalog(item.catalog)
             let isNewKey = target.entry(item.key) == nil
@@ -532,7 +533,7 @@ public struct Fixer {
                 }
                 // Mark the English-text key stale once no code references it anymore
                 // (Xcode recomputes extractionState on the next build either way).
-                if !referencedTextKeys.contains("\(target.tableName)|\(migrateFrom)") {
+                if !referencedTextKeys.contains(CatalogKey(catalog: target.tableName, key: ByteKey(migrateFrom))) {
                     old.extractionState = "stale"
                     target.setEntry(migrateFrom, old)
                 }
@@ -543,7 +544,7 @@ public struct Fixer {
                 result.notes.append("\(item.catalog): upgraded catalog format to 1.1 for generated symbols")
             }
             catalogs[item.catalog] = target
-            if isNewKey, added.insert("\(item.catalog)|\(item.key)").inserted {
+            if isNewKey, added.insert(CatalogKey(catalog: item.catalog, key: ByteKey(item.key))).inserted {
                 result.keysAdded.append(item.key)
             }
         }
@@ -595,6 +596,19 @@ public struct Fixer {
             }
         }
         return merged
+    }
+
+    /// A catalog (or table) plus a byte-exact key.
+    struct CatalogKey: Hashable {
+        var catalog: String
+        var key: ByteKey
+    }
+
+    struct PlannedGroup: Hashable {
+        var catalog: String
+        var scope: String
+        var role: String
+        var sourceValue: ByteKey
     }
 
     static func syntaxErrorCount(_ source: String) -> Int {

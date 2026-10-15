@@ -788,7 +788,11 @@ public final class TranslationEngine: @unchecked Sendable {
                 switch validate(raw, for: unit) {
                 case .success(let result):
                     write(result, for: unit, into: &loaded)
-                    loaded.fingerprints.set(catalog: path, key: item.key, locale: item.locale, fingerprint: FingerprintStore.sourceFingerprint(sourceNode))
+                    // Approved forms next to the provided ones were not reviewed against the
+                    // current source: keep the old fingerprint so their staleness stays visible.
+                    if approvedLeaves.isEmpty {
+                        loaded.fingerprints.set(catalog: path, key: item.key, locale: item.locale, fingerprint: FingerprintStore.sourceFingerprint(sourceNode))
+                    }
                     if let problem = glossaryProblem(result, unit: unit) { report.warnings.append("\(item.key) [\(item.locale)]: \(problem)") }
                     report.translated += 1
                     report.perLocale[item.locale, default: 0] += 1
