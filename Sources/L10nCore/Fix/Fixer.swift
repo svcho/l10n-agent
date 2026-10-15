@@ -476,6 +476,17 @@ public struct Fixer {
         }
 
         // 3. Catalog changes, only for code edits that were applied.
+        // English-text keys still used by code that was not rewritten stay live.
+        var referencedTextKeys: Set<String> = []
+        if appliedItems.contains(where: { $0.migrateFrom != nil }) {
+            let scanner = SwiftScanner(userFacing: project.config.userFacing)
+            for url in project.swiftFiles {
+                guard let source = try? SourceText.read(url) else { continue }
+                for site in scanner.scan(source: source.text, path: project.relativePath(url)) where site.kind == .localizedText || site.kind == .localizedKey {
+                    if let key = site.key { referencedTextKeys.insert("\(site.table ?? "Localizable")|\(key)") }
+                }
+            }
+        }
         var fingerprints = try FingerprintStore.load(root: project.root)
         var added: Set<String> = []
         for item in appliedItems.sorted(by: { ($0.file, $0.range.start) < ($1.file, $1.range.start) }) {
@@ -503,10 +514,12 @@ public struct Fixer {
                         fingerprints.set(catalog: item.catalog, key: item.key, locale: locale, fingerprint: newFingerprint)
                     }
                 }
-                // The English-text key is no longer referenced from this site. Xcode
-                // recomputes extractionState on the next build if other code still uses it.
-                old.extractionState = "stale"
-                target.setEntry(migrateFrom, old)
+                // Mark the English-text key stale once no code references it anymore
+                // (Xcode recomputes extractionState on the next build either way).
+                if !referencedTextKeys.contains("\(target.tableName)|\(migrateFrom)") {
+                    old.extractionState = "stale"
+                    target.setEntry(migrateFrom, old)
+                }
             }
             target.setEntry(item.key, entry)
             if usesSymbols, target.version == "1.0" {

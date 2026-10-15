@@ -370,6 +370,69 @@ struct ReviewRegressionTests {
         #expect(findings.first?.message.contains("plural.other") == true)
     }
 
+    @Test func catalogFilterDoesNotNarrowTargetLocales() async throws {
+        let root = try TestSupport.makeProject([
+            "A/First.xcstrings": TestSupport.catalogJSON(["a.title": TestSupport.manual("A", translations: ["de": TestSupport.unit("A-de")])]),
+            "B/Second.xcstrings": TestSupport.catalogJSON(["b.title": TestSupport.manual("Second title")]),
+        ])
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(catalogs: ["Second.xcstrings"], dryRun: true), model: nil)
+        #expect(report.units?.map { "\($0.key)/\($0.locale)" } == ["b.title/de"])
+    }
+
+    @Test func glossaryIsValidatedPerPluralForm() async throws {
+        let source: [String: Any] = ["extractionState": "manual", "comment": "c", "localizations": ["en": ["variations": ["plural": [
+            "one": TestSupport.unit("%lld file in Acme Cloud"),
+            "other": TestSupport.unit("%lld files"),
+        ]]]]]
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\nglossary: { \"Acme Cloud\": { de: \"Acme Cloud\" } }\ntranslator: { maxRetries: 1 }\n",
+            "L.xcstrings": TestSupport.catalogJSON(["files": source]),
+        ])
+        let attempts = Counter()
+        let model = ScriptedChatModel { _, _ in
+            // First answer drops the term from "one" (where the source has it); "other" never needs it.
+            let one = await attempts.next() == 1 ? "⟦1⟧ Datei" : "⟦1⟧ Datei in Acme Cloud"
+            return #"{"translations":[{"id":"1","forms":{"one":"\#(one)","other":"⟦1⟧ Dateien"}}]}"#
+        }
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(), model: model)
+        #expect(report.translated == 1)
+        #expect(report.warnings.isEmpty)
+        #expect(await attempts.value == 2)
+    }
+
+    @Test func providedTranslationsNeedACatalogWhenTheKeyIsAmbiguous() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "AppA/Localizable.xcstrings": TestSupport.catalogJSON(["common.cancel": TestSupport.manual("Cancel")]),
+            "AppB/Localizable.xcstrings": TestSupport.catalogJSON(["common.cancel": TestSupport.manual("Cancel")]),
+        ])
+        let engine = TranslationEngine(project: try Project.discover(root: root))
+        let ambiguous = try engine.applyProvided([ProvidedTranslation(key: "common.cancel", locale: "de", value: "Abbrechen")])
+        #expect(ambiguous.translated == 0)
+        #expect(ambiguous.failed.first?.reason.contains("several catalogs") == true)
+        let explicit = try engine.applyProvided([ProvidedTranslation(catalog: "AppB/Localizable.xcstrings", key: "common.cancel", locale: "de", value: "Abbrechen")])
+        #expect(explicit.translated == 1)
+        #expect(try StringCatalog.load(root.appendingPathComponent("AppB/Localizable.xcstrings")).entry("common.cancel")?.localization("de") != nil)
+        #expect(try StringCatalog.load(root.appendingPathComponent("AppA/Localizable.xcstrings")).entry("common.cancel")?.localization("de") == nil)
+    }
+
+    @Test func textKeysStillUsedElsewhereStayLive() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON(["Welcome back": ["localizations": ["de": TestSupport.unit("Willkommen zurück")]]]),
+            "App/HomeView.swift": "import SwiftUI\nstruct HomeView: View { var body: some View { Text(\"Welcome back\") } }\n",
+            "App/LoginView.swift": "import SwiftUI\nstruct LoginView: View { var body: some View { Text(\"Welcome back\") } }\n",
+        ])
+        let project = try Project.discover(root: root)
+        let partial = try Fixer(project: project).apply(try Fixer(project: project).plan(files: ["App/HomeView.swift"]))
+        #expect(partial.applied.count == 1)
+        #expect(try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings")).entry("Welcome back")?.isStale == false)
+
+        let rest = try Project.discover(root: root)
+        _ = try Fixer(project: rest).apply(try Fixer(project: rest).plan(files: ["App/LoginView.swift"]))
+        #expect(try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings")).entry("Welcome back")?.isStale == true)
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

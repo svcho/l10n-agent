@@ -88,13 +88,17 @@ public final class TranslationEngine: @unchecked Sendable {
     func load(_ options: TranslateOptions) throws -> Loaded {
         var catalogs: [String: StringCatalog] = [:]
         var order: [String] = []
+        var allCatalogs: [StringCatalog] = []
         for url in project.catalogURLs {
+            let catalog = try StringCatalog.load(url)
+            allCatalogs.append(catalog)
             let path = project.relativePath(url)
             if let filter = options.catalogs, !filter.contains(path), !filter.contains(url.lastPathComponent) { continue }
-            catalogs[path] = try StringCatalog.load(url)
+            catalogs[path] = catalog
             order.append(path)
         }
-        let allLocales = project.targetLocales(catalogs: Array(catalogs.values))
+        // Target locales come from the whole project, even when only some catalogs are processed.
+        let allLocales = project.targetLocales(catalogs: allCatalogs)
         let locales = options.locales.map { requested in requested.filter { $0 != project.sourceLanguage } } ?? allLocales
         return Loaded(catalogs: catalogs, order: order, fingerprints: try FingerprintStore.load(root: project.root), locales: locales)
     }
@@ -533,17 +537,24 @@ public final class TranslationEngine: @unchecked Sendable {
         }
     }
 
+    /// Each translated text must use the required term when its own source text uses the
+    /// glossary term. Plural forms compare with the same source category, else `other`.
     func glossaryProblem(_ result: UnitResult, unit: TranslationUnit) -> String? {
-        let sourceText = unit.source ?? unit.sourceForms?["other"] ?? ""
-        let texts: [String]
+        let pairs: [(source: String, target: String, label: String?)]
         switch result {
-        case .text(let text): texts = [text]
-        case .forms(let forms): texts = Array(forms.values)
+        case .text(let text):
+            pairs = [(unit.source ?? "", text, nil)]
+        case .forms(let forms):
+            pairs = forms.sorted(by: { $0.key < $1.key }).map { category, text in
+                (unit.sourceForms?[category] ?? unit.sourceForms?["other"] ?? "", text, category)
+            }
         }
         for (term, translations) in project.config.glossary.sorted(by: { $0.key < $1.key }) {
-            guard let required = translations[unit.locale], sourceText.range(of: term, options: .caseInsensitive) != nil else { continue }
-            if !texts.allSatisfy({ $0.range(of: required, options: .caseInsensitive) != nil }) {
-                return "Glossary: translate \"\(term)\" as \"\(required)\"."
+            guard let required = translations[unit.locale] else { continue }
+            for pair in pairs where pair.source.range(of: term, options: .caseInsensitive) != nil
+                && pair.target.range(of: required, options: .caseInsensitive) == nil {
+                let form = pair.label.map { " in form \"\($0)\"" } ?? ""
+                return "Glossary: translate \"\(term)\" as \"\(required)\"\(form)."
             }
         }
         return nil
@@ -710,7 +721,12 @@ public final class TranslationEngine: @unchecked Sendable {
             var report = TranslateReport(model: "provided", dryRun: false, planned: provided.count, translated: 0, perLocale: [:], failed: [], approvedSkipped: [], warnings: [], units: nil, aborted: nil)
             var touched: Set<String> = []
             for item in provided {
-                let path = item.catalog ?? loaded.order.first { loaded.catalogs[$0]?.contains(item.key) == true }
+                let matches = loaded.order.filter { loaded.catalogs[$0]?.contains(item.key) == true }
+                if item.catalog == nil, matches.count > 1 {
+                    report.failed.append(TranslationIssue(catalog: "", key: item.key, locale: item.locale, reason: "the key exists in several catalogs (\(matches.joined(separator: ", "))); set catalog"))
+                    continue
+                }
+                let path = item.catalog.map { project.relativePath((try? PathUtil.resolveInside($0, root: project.root)) ?? project.root.appendingPathComponent($0)) } ?? matches.first
                 guard let path, let catalog = loaded.catalogs[path], let entry = catalog.entry(item.key) else {
                     report.failed.append(TranslationIssue(catalog: item.catalog ?? "", key: item.key, locale: item.locale, reason: "key not found in any catalog"))
                     continue

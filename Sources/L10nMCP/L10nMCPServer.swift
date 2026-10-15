@@ -109,7 +109,7 @@ public struct L10nMCPServer: Sendable {
         ),
         Tool(
             name: "l10n_set_translations",
-            description: "Write translations you produced yourself. Each item: key, locale, and value (with the same format specifiers as the source, e.g. %@, %lld, %1$@) or forms (CLDR plural category → text) for plural keys. Validated for specifier parity; written as needs_review.",
+            description: "Write translations you produced yourself. Each item: key, locale, and value (with the same format specifiers as the source, e.g. %@, %lld, %1$@) or forms (CLDR plural category → text) for plural keys. Validated for specifier parity; written as needs_review. Set catalog when the key exists in more than one catalog.",
             inputSchema: schema([
                 "translations": .object([
                     "type": "array",
