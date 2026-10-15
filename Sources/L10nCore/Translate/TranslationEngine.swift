@@ -494,9 +494,11 @@ public final class TranslationEngine: @unchecked Sendable {
             return .success(.text(restored))
         case (.forms(let forms), let sourceForms?):
             let categories = unit.categories ?? ["one", "other"]
-            let reference = sourceForms["other"] ?? sourceForms.values.first ?? ""
             var restoredForms: [String: String] = [:]
             for category in categories {
+                // Each form is restored and checked against its own source form; categories
+                // the source lacks (e.g. Polish "few") use the source "other".
+                let reference = sourceForms[category] ?? sourceForms["other"] ?? sourceForms.values.first ?? ""
                 guard let text = forms[category] else {
                     return .failure(Problem(message: "Missing plural form \"\(category)\". Return forms for exactly: \(categories.joined(separator: ", "))."))
                 }

@@ -24,7 +24,6 @@ public struct Fixer {
             catalogs[url] = try StringCatalog.load(url)
         }
         let suggester = KeySuggester(policy: project.config.keys)
-        let usesSymbols = project.usesSymbols
 
         var items: [FixItem] = []
         var plannedKeys: [String: [String: String]] = [:]   // catalog → key → sourceValue
@@ -34,6 +33,8 @@ public struct Fixer {
         for url in linter.selectedSwiftFiles(files) {
             let source = try SourceText.read(url)
             let relative = project.relativePath(url)
+            // Symbol naming constraints only matter where this file's rewrites use symbols.
+            let fileUsesSymbols = project.usesSymbols(for: url)
             for (site, diagnostic) in fixableFindings(source: source.text, relative: relative, linter: linter, options: options) {
                 if let findingIDs, !findingIDs.contains(diagnostic.id) { continue }
                 fileHashes[relative] = Hashing.sha256(source.text)
@@ -54,7 +55,7 @@ public struct Fixer {
                 var reuses = false
                 let manualSymbols = Dictionary(grouping: catalog.entries.filter { $0.entry.isManual }.map(\.key), by: { SymbolNaming.bareName(for: $0) ?? $0 })
                 let symbolIsClean: (String) -> Bool = { key in
-                    !usesSymbols || (SymbolNaming.symbol(for: key) != .reserved && (manualSymbols[SymbolNaming.bareName(for: key) ?? key]?.count ?? 0) <= 1)
+                    !fileUsesSymbols || (SymbolNaming.symbol(for: key) != .reserved && (manualSymbols[SymbolNaming.bareName(for: key) ?? key]?.count ?? 0) <= 1)
                 }
                 // Existing keys are reused only within the same screen scope or from `common.`.
                 let scope = suggester.effectiveScope(for: site)
@@ -75,7 +76,7 @@ public struct Fixer {
                     .union((plannedKeys[catalogPath] ?? [:]).keys.compactMap { SymbolNaming.bareName(for: $0) })
                 let finalKey = key ?? suggester.suggest(for: site) { candidate in
                     catalog.contains(candidate) || plannedKeys[catalogPath]?[candidate] != nil
-                        || (usesSymbols && existingSymbols.contains(SymbolNaming.bareName(for: candidate) ?? candidate))
+                        || (fileUsesSymbols && existingSymbols.contains(SymbolNaming.bareName(for: candidate) ?? candidate))
                 }
                 plannedKeys[catalogPath, default: [:]][finalKey] = sourceValue
                 plannedGroups["\(catalogPath)|\(suggester.effectiveScope(for: site))|\(site.role)|\(sourceValue)"] = finalKey
@@ -320,9 +321,7 @@ public struct Fixer {
     private func applyLocked(_ plan: FixPlan, includeReview: Bool) throws -> ApplyResult {
         var result = ApplyResult(applied: [], skipped: [:], filesChanged: [], catalogsChanged: [], keysAdded: [], notes: [])
         // The rewrite style follows the project, never the plan.
-        // Symbol collision checks apply whenever any code may use symbols; the rewrite style
-        // itself is decided per file below.
-        let usesSymbols = project.usesSymbols
+        // The rewrite style, and with it the symbol constraints, is decided per file below.
         let projectStyle = project.codeStyleSummary(files: plan.files.keys.sorted().map { project.root.appendingPathComponent($0) })
         guard plan.codeStyle == projectStyle else {
             throw L10nError.planConflict("the plan uses \(plan.codeStyle) style but the project uses \(projectStyle); re-run fix to plan again")
@@ -421,7 +420,8 @@ public struct Fixer {
                     continue
                 }
             }
-            if usesSymbols, SymbolNaming.symbol(for: item.key) == .reserved {
+            let fileUsesSymbols = project.usesSymbols(for: fileURL)
+            if fileUsesSymbols, SymbolNaming.symbol(for: item.key) == .reserved {
                 result.skipped[item.id] = "key \"\(item.key)\" cannot generate a Swift symbol"
                 continue
             }
@@ -437,7 +437,7 @@ public struct Fixer {
                     continue
                 }
             }
-            if usesSymbols, let symbol = SymbolNaming.bareName(for: item.key) {
+            if fileUsesSymbols, let symbol = SymbolNaming.bareName(for: item.key) {
                 let clashes = target.entries.contains { $0.entry.isManual && $0.key != item.key && SymbolNaming.bareName(for: $0.key) == symbol }
                     || assignedValues.keys.contains { $0.hasPrefix(catalogPath + "|") && $0 != assignmentKey && SymbolNaming.bareName(for: String($0.dropFirst(catalogPath.count + 1))) == symbol }
                 if clashes {
@@ -446,7 +446,7 @@ public struct Fixer {
                 }
             }
             assignedValues[assignmentKey] = item.sourceValue
-            item.replacement = Self.replacement(for: item, usesSymbols: project.usesSymbols(for: fileURL), table: target.tableName, moduleBundle: isInSwiftPackage(fileURL))
+            item.replacement = Self.replacement(for: item, usesSymbols: fileUsesSymbols, table: target.tableName, moduleBundle: isInSwiftPackage(fileURL))
             accepted.append((item, catalogPath))
         }
 

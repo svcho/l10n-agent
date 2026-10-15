@@ -149,8 +149,8 @@ public struct JSONParser {
             index += 1
         }
         guard index > start, let literal = String(bytes: bytes[start..<index], encoding: .utf8),
-              Double(literal) != nil
-        else { throw error("Invalid value") }
+              literal.wholeMatch(of: /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/) != nil
+        else { throw error("Invalid number") }
         return literal
     }
 

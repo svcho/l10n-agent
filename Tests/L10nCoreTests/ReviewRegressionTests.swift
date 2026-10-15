@@ -587,6 +587,49 @@ struct ReviewRegressionTests {
         #expect(FormatSpecifier.argumentSignature(of: "Save 50% off today").isEmpty)
     }
 
+    @Test func symbolConstraintsOnlyApplyToSymbolRewrites() throws {
+        let root = try TestSupport.makeProject([
+            "App.xcodeproj/project.pbxproj": "STRING_CATALOG_GENERATE_SYMBOLS = YES;\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "Packages/Kit/Package.swift": "// swift-tools-version: 6.0\n",
+            "Packages/Kit/Sources/Kit/Localizable.xcstrings": TestSupport.catalogJSON(["kit.dup.x": TestSupport.manual("Other text")]),
+            "Packages/Kit/Sources/Kit/K.swift": "func f() { label.text = \"Dup text\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        var plan = try Fixer(project: project).plan()
+        // "kit.dupX" collides with "kit.dup.x" only as a generated symbol; the package uses literals.
+        plan.items[0].key = "kit.dupX"
+        let result = try Fixer(project: project).apply(plan)
+        #expect(result.applied.count == 1, "\(result.skipped)")
+        #expect(try String(contentsOf: root.appendingPathComponent("Packages/Kit/Sources/Kit/K.swift"), encoding: .utf8).contains(#"String(localized: "kit.dupX""#))
+    }
+
+    @Test func pluralFormsAreRestoredAgainstTheirOwnSourceForm() async throws {
+        let source: [String: Any] = ["extractionState": "manual", "comment": "c", "localizations": ["en": ["variations": ["plural": [
+            "one": TestSupport.unit("One file from %@"),
+            "other": TestSupport.unit("%lld files"),
+        ]]]]]
+        let root = try TestSupport.makeProject([".l10n-agent.yml": "locales: [de]\n", "L.xcstrings": TestSupport.catalogJSON(["files": source])])
+        let model = ScriptedChatModel { _, _ in
+            #"{"translations":[{"id":"1","forms":{"one":"Eine Datei von ⟦1⟧","other":"⟦1⟧ Dateien"}}]}"#
+        }
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(), model: model)
+        #expect(report.translated == 1, "\(report.failed)")
+        let de = try #require(try StringCatalog.load(root.appendingPathComponent("L.xcstrings")).entry("files")?.localization("de"))
+        let byCategory = Dictionary(uniqueKeysWithValues: de.leaves.map { ($0.path.last!, $0.unit.value) })
+        #expect(byCategory["one"] == "Eine Datei von %@")
+        #expect(byCategory["other"] == "%lld Dateien")
+    }
+
+    @Test func parserRejectsNonJSONNumbers() throws {
+        for literal in ["+1", "01", "1.", ".5", "1e", "--1", "0x10"] {
+            #expect(throws: JSONParseError.self, "\(literal)") { try JSONParser.parse("{\"n\":\(literal)}") }
+        }
+        for literal in ["0", "-0", "12", "-0.5e10", "1E+2", "3.25"] {
+            #expect(try JSONParser.parse("{\"n\":\(literal)}")["n"] == .number(literal))
+        }
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {
