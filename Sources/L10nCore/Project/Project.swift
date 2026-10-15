@@ -20,10 +20,14 @@ public struct XcodeSettings: Equatable, Sendable {
     /// The setting of the project that owns `file`: the `.xcodeproj` whose folder is the
     /// nearest ancestor of the file, or the only project.
     public func symbolGeneration(for file: URL) -> SymbolGeneration {
+        owningProject(for: file).flatMap { symbolGeneration[$0.path] } ?? .disabled
+    }
+
+    /// The `.xcodeproj` whose folder is the nearest ancestor of `file`, or the only project.
+    public func owningProject(for file: URL) -> URL? {
         let filePath = file.standardizedFileURL.path
         let owners = projectFiles.filter { filePath.hasPrefix($0.deletingLastPathComponent().path + "/") }
-        let owner = owners.max(by: { $0.path.count < $1.path.count }) ?? (projectFiles.count == 1 ? projectFiles[0] : nil)
-        return owner.flatMap { symbolGeneration[$0.path] } ?? .disabled
+        return owners.max(by: { $0.path.count < $1.path.count }) ?? (projectFiles.count == 1 ? projectFiles[0] : nil)
     }
 
     public static func read(projects: [URL]) -> XcodeSettings {
@@ -206,6 +210,13 @@ public struct Project: Sendable {
         if let nearest = appCandidates.filter({ filePath.hasPrefix($0.deletingLastPathComponent().path + "/") })
             .max(by: { $0.path.count < $1.path.count }) {
             return [nearest]
+        }
+        // Catalogs in sibling folders (App/Resources next to App/Sources): use the ones of
+        // the Xcode project that owns the file before treating the lookup as ambiguous.
+        // A file owned by a project only sees that project's catalogs.
+        let ownerFolders = xcode.projectFiles.map { $0.deletingLastPathComponent().path + "/" }
+        if let owner = ownerFolders.filter({ filePath.hasPrefix($0) }).max(by: { $0.count < $1.count }) {
+            return appCandidates.filter { $0.path.hasPrefix(owner) }
         }
         return appCandidates
     }

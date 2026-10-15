@@ -318,7 +318,8 @@ public struct Linter {
                 }
             }
 
-            if project.usesSymbols {
+            // Symbol checks only apply where Xcode actually generates symbols for this catalog.
+            if project.usesSymbols(for: catalog.url) {
                 for key in manualKeys where SymbolNaming.symbol(for: key) == .reserved {
                     add(Rules.symbolCollision, "Key \"\(key)\" is too close to a Swift keyword to generate a symbol", key: key)
                 }

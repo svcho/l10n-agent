@@ -514,6 +514,79 @@ struct ReviewRegressionTests {
         #expect(Set(sites.map(\.displayText)) == ["Shipping text one", "Shipping text two", "Shipping text three"])
     }
 
+    @Test func secretScanChecksStagedBlobs() throws {
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("scan-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("scripts"), withIntermediateDirectories: true)
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("scripts/secret-scan.sh")
+        try FileManager.default.copyItem(at: script, to: repo.appendingPathComponent("scripts/secret-scan.sh"))
+        #expect(TestSupport.shell(["git", "init", "-q"], cwd: repo).0 == 0)
+        let fakeKey = "AK" + "IA" + String(repeating: "Q", count: 16)   // built at runtime so this file stays clean
+        let file = repo.appendingPathComponent("config.txt")
+        try "key=\(fakeKey)\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(TestSupport.shell(["git", "add", "config.txt"], cwd: repo).0 == 0)
+        try "key=removed\n".write(to: file, atomically: true, encoding: .utf8)   // cleaned only in the working copy
+        let (status, output) = TestSupport.shell(["bash", "scripts/secret-scan.sh"], cwd: repo)
+        #expect(status != 0)
+        #expect(output.contains("config.txt (staged)"))
+    }
+
+    @Test func siblingResourceCatalogsResolveThroughTheOwningProject() throws {
+        let root = try TestSupport.makeProject([
+            "AppA/AppA.xcodeproj/project.pbxproj": "// stub\n",
+            "AppA/Resources/Localizable.xcstrings": TestSupport.catalogJSON(["a.title": TestSupport.manual("A")]),
+            "AppA/Sources/View.swift": "import SwiftUI\nstruct V: View { var body: some View { VStack { Text(\"a.title\"); Text(\"b.title\") } } }\n",
+            "AppB/AppB.xcodeproj/project.pbxproj": "// stub\n",
+            "AppB/Resources/Localizable.xcstrings": TestSupport.catalogJSON(["b.title": TestSupport.manual("B")]),
+        ])
+        let project = try Project.discover(root: root)
+        #expect(project.catalogURLs(forTable: "Localizable", file: root.appendingPathComponent("AppA/Sources/View.swift")).map(project.relativePath) == ["AppA/Resources/Localizable.xcstrings"])
+        let report = try Linter(project: project).run(LintOptions(rules: ["L10N004"]))
+        #expect(report.diagnostics.map(\.key) == ["b.title"])
+    }
+
+    @Test func symbolCollisionsOnlyMatterWhereSymbolsAreGenerated() throws {
+        let colliding = TestSupport.catalogJSON(["dup.x": TestSupport.manual("One"), "dupX": TestSupport.manual("Two")])
+        let root = try TestSupport.makeProject([
+            "App.xcodeproj/project.pbxproj": "STRING_CATALOG_GENERATE_SYMBOLS = YES;\n",
+            "App/Localizable.xcstrings": colliding,
+            "Packages/Kit/Package.swift": "// swift-tools-version: 6.0\n",
+            "Packages/Kit/Sources/Kit/Localizable.xcstrings": colliding,
+        ])
+        let report = try Linter(project: try Project.discover(root: root)).run(LintOptions(rules: ["L10N110"]))
+        #expect(Set(report.diagnostics.map(\.file)) == ["App/Localizable.xcstrings"])
+    }
+
+    @Test func providedFormsFillCategoriesBesideApprovedOnes() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "L.xcstrings": TestSupport.catalogJSON([
+                "files": [
+                    "extractionState": "manual", "comment": "c",
+                    "localizations": [
+                        "en": ["variations": ["plural": ["one": TestSupport.unit("%lld file"), "other": TestSupport.unit("%lld files")]]],
+                        "de": ["variations": ["plural": ["one": TestSupport.unit("%lld Datei")]]],
+                    ],
+                ],
+            ]),
+        ])
+        let report = try TranslationEngine(project: try Project.discover(root: root)).applyProvided([
+            ProvidedTranslation(key: "files", locale: "de", forms: ["one": "Eine Datei überschrieben", "other": "%lld Dateien"]),
+        ])
+        #expect(report.translated == 1, "\(report.failed)")
+        let de = try #require(try StringCatalog.load(root.appendingPathComponent("L.xcstrings")).entry("files")?.localization("de"))
+        let byCategory = Dictionary(uniqueKeysWithValues: de.leaves.map { ($0.path.last!, $0.unit) })
+        #expect(byCategory["one"] == StringUnit(state: "translated", value: "%lld Datei"), "approved form untouched")
+        #expect(byCategory["other"] == StringUnit(state: "needs_review", value: "%lld Dateien"))
+    }
+
+    @Test func spaceFlagIsASpecifierButProseIsNot() {
+        #expect(FormatSpecifier.argumentSignature(of: "% d items") == [1: .integer])
+        #expect(FormatParity.problem(source: "% d items", target: "Elemente") != nil)
+        #expect(FormatSpecifier.argumentSignature(of: "100% discount").isEmpty)
+        #expect(FormatSpecifier.argumentSignature(of: "Save 50% off today").isEmpty)
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

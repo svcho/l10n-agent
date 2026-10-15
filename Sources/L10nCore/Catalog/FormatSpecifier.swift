@@ -177,7 +177,9 @@ public enum FormatSpecifier {
         }
 
         // Flags
-        while index < string.endIndex, "-+#0".contains(string[index]) {
+        var hasSpaceFlag = false
+        while index < string.endIndex, "-+#0 ".contains(string[index]) {
+            hasSpaceFlag = hasSpaceFlag || string[index] == " "
             index = string.index(after: index)
         }
         // Width and precision; `*` (optionally `*n$`) takes the value from an argument.
@@ -229,6 +231,12 @@ public enum FormatSpecifier {
         case "p": type = .pointer
         default: return nil
         }
-        return (position, type, string.index(after: index), stars)
+        let end = string.index(after: index)
+        // `% d` is a valid specifier, but in prose "100% discount" is not: with a space flag,
+        // require the conversion to end the word.
+        if hasSpaceFlag, end < string.endIndex, string[end].isLetter || string[end].isNumber {
+            return nil
+        }
+        return (position, type, end, stars)
     }
 }

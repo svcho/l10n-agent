@@ -49,10 +49,12 @@ Out of scope:
 - Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`, non-literal `table:`/`comment:`) are skipped.
 - With `codeStyle: auto`, symbol rewrites are decided per file: only files of an `.xcodeproj` that enables symbol generation in every configuration get symbols; package targets and mixed projects get literals.
 - `apply` loads every piece of state that can fail (catalogs, fingerprints) before writing any source file; `init` holds one lock for all its writes.
-- `*` widths/precisions (`%*d`) count as integer arguments; strings with them are never reordered.
+- `*` widths/precisions (`%*d`) count as integer arguments; strings with them are never reordered. The space flag (`% d`) counts only when the conversion ends the word, so prose such as "100% discount" stays text.
+- L10N110 applies only to catalogs whose target generates symbols.
+- Provided plural translations may fill categories next to approved ones; approved categories are ignored, never overwritten.
 - Only conditions that require `DEBUG` (`DEBUG`, `DEBUG && X`, `A || B` with both requiring it) are skipped by the scanner.
 - Plural categories come from the CLDR table in `PluralRules` or `pluralCategories` in the config; unknown languages are reported, never guessed.
-- Catalog lookups are scoped to the file's own target: L10N004 checks only those catalogs, and fixes for a named table use (or create) that table there instead of another target's catalog or `Localizable`.
+- Catalog lookups are scoped to the file's own target (package target, nearest ancestor catalog, else the owning `.xcodeproj` folder): L10N004 checks only those catalogs, and fixes for a named table use (or create) that table there instead of another target's catalog or `Localizable`.
 - Glossary terms (L10N108) are checked in every variation whose source uses the term.
 - Fixes whose placeholder types are guessed are `needsReview` and are not applied by default.
 - Translation is local-only. Non-localhost URLs and Ollama `:cloud` models need `translator.allowRemote: true` plus `L10N_AGENT_ALLOW_REMOTE=1` in the user's environment.
@@ -76,4 +78,4 @@ scripts/check.sh
 ## Release and docs policy
 
 - Update README, this file and CHANGELOG in the same change as behavior changes.
-- Keep the repo publish-safe: never commit credentials, `.env*`, private keys or recorded model output. `scripts/secret-scan.sh` runs in `scripts/check.sh`.
+- Keep the repo publish-safe: never commit credentials, `.env*`, private keys or recorded model output. `scripts/secret-scan.sh` (staged blobs plus working copies) runs in `scripts/check.sh` and the pre-commit hook.

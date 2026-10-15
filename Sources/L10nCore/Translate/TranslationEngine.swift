@@ -739,8 +739,15 @@ public final class TranslationEngine: @unchecked Sendable {
                     report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "the key is marked as not translatable or unused"))
                     continue
                 }
-                if entry.localization(item.locale)?.leaves.contains(where: \.unit.isApproved) == true {
+                let approvedLeaves = entry.localization(item.locale)?.leaves.filter(\.unit.isApproved) ?? []
+                if item.forms == nil, !approvedLeaves.isEmpty {
                     report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "an approved translation exists; change it in Xcode instead"))
+                    continue
+                }
+                // Plural forms: approved categories stay untouched; the caller fills the rest.
+                let approvedCategories = Set(approvedLeaves.compactMap { $0.path.count >= 3 && $0.path[$0.path.count - 3] == "variations" ? $0.path.last : nil })
+                if item.forms != nil, approvedLeaves.contains(where: { $0.path.isEmpty }) {
+                    report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "an approved plain translation exists; add plural variations in Xcode"))
                     continue
                 }
                 let sourceNode = entry.sourceNode(key: item.key, sourceLanguage: catalog.sourceLanguage)
@@ -754,10 +761,15 @@ public final class TranslationEngine: @unchecked Sendable {
                     report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "plural categories for \(item.locale) are unknown; add them under pluralCategories in \(L10nConfig.fileName)"))
                     continue
                 }
-                let unit = TranslationUnit(id: "1", catalog: path, key: item.key, locale: item.locale, path: [], source: shape.source, sourceForms: shape.forms, categories: shape.forms == nil ? nil : categories, comment: entry.comment, reason: "provided")
+                let needed = categories?.filter { !approvedCategories.contains($0) }
+                if shape.forms != nil, needed?.isEmpty == true {
+                    report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "every plural category is already approved"))
+                    continue
+                }
+                let unit = TranslationUnit(id: "1", catalog: path, key: item.key, locale: item.locale, path: [], source: shape.source, sourceForms: shape.forms, categories: shape.forms == nil ? nil : needed, comment: entry.comment, reason: "provided")
                 let raw: UnitResult
                 if let forms = item.forms {
-                    raw = .forms(forms.mapValues { MaskedText(source: $0).text })
+                    raw = .forms(forms.filter { !approvedCategories.contains($0.key) }.mapValues { MaskedText(source: $0).text })
                 } else if let value = item.value {
                     raw = .text(MaskedText(source: value).text)
                 } else {
