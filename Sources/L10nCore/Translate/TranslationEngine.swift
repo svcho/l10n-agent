@@ -383,14 +383,24 @@ public final class TranslationEngine: @unchecked Sendable {
         return report
     }
 
-    private func saveTouched(_ loaded: inout Loaded, catalogs: Set<String>) throws {
-        for path in catalogs.sorted() {
-            try loaded.catalogs[path]?.write()
-        }
+    /// Writes touched catalogs and the fingerprint store as one unit: if any write fails,
+    /// everything written in this call is restored, so translations never land without
+    /// their fingerprints (which would make the next run retranslate them).
+    func saveTouched(_ loaded: inout Loaded, catalogs: Set<String>) throws {
         for (path, catalog) in loaded.catalogs {
             loaded.fingerprints.prune(catalog: path) { key, locale in catalog.entry(key)?.localization(locale) != nil }
         }
-        try loaded.fingerprints.save()
+        var transaction = FileTransaction()
+        do {
+            for path in catalogs.sorted() {
+                guard let catalog = loaded.catalogs[path] else { continue }
+                try transaction.write(catalog.serialized(), to: catalog.url)
+            }
+            try transaction.write(loaded.fingerprints.serialized(), to: loaded.fingerprints.url)
+        } catch {
+            transaction.rollBack()
+            throw error
+        }
     }
 
     static func batches(_ units: [TranslationUnit], size: Int) -> [[TranslationUnit]] {

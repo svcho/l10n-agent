@@ -1055,6 +1055,27 @@ struct ReviewRegressionTests {
         #expect(!FileManager.default.fileExists(atPath: FingerprintStore.path(root: root).path), "no fingerprints left behind")
     }
 
+    @Test func failedTranslateSaveRollsBackCatalogs() async throws {
+        let catalogJSON = TestSupport.catalogJSON(["home.title": TestSupport.manual("Home")])
+        let root = try TestSupport.makeProject([".l10n-agent.yml": "locales: [de]\n", "App/Localizable.xcstrings": catalogJSON])
+        let project = try Project.discover(root: root)
+        // Make the fingerprints file unwritable: its folder exists but is read-only.
+        let state = root.appendingPathComponent(".l10n-agent")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let catalogBefore = try Data(contentsOf: root.appendingPathComponent("App/Localizable.xcstrings"))
+        let engine = TranslationEngine(project: project)
+        var loaded = try engine.load(TranslateOptions())
+        var catalog = loaded.catalogs["App/Localizable.xcstrings"]!
+        var entry = catalog.entry("home.title")!
+        entry.setLocalization("de", LocalizationNode(unit: StringUnit(state: "needs_review", value: "Start")))
+        catalog.setEntry("home.title", entry)
+        loaded.catalogs["App/Localizable.xcstrings"] = catalog
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: state.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: state.path) }
+        #expect(throws: (any Error).self) { try engine.saveTouched(&loaded, catalogs: ["App/Localizable.xcstrings"]) }
+        #expect(try Data(contentsOf: root.appendingPathComponent("App/Localizable.xcstrings")) == catalogBefore, "catalog restored")
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

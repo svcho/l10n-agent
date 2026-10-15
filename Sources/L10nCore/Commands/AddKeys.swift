@@ -91,8 +91,15 @@ public enum AddKeysCommand {
                 catalogs[catalogPath] = catalog
                 result.added.append(item.key)
             }
-            for catalog in catalogs.values {
-                try catalog.write()
+            // All catalogs or none, so a failed write never leaves keys half-added.
+            var transaction = FileTransaction()
+            do {
+                for catalog in catalogs.values.sorted(by: { $0.url.path < $1.url.path }) {
+                    try transaction.write(catalog.serialized(), to: catalog.url)
+                }
+            } catch {
+                transaction.rollBack()
+                throw error
             }
             return result
         }
