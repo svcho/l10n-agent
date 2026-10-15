@@ -17,7 +17,10 @@ report() {
 # Staged blobs (also covers files whose working copy was cleaned after staging).
 while IFS= read -r -d '' path; do
   [ "$path" = "$self" ] && continue
-  if git show ":$path" 2>/dev/null | LC_ALL=C grep -EIq -e "$pattern"; then
+  # grep -c reads the whole blob: an early-exiting `grep -q` would SIGPIPE `git show`,
+  # and with pipefail the pipeline would then look clean.
+  hits=$(git show ":$path" 2>/dev/null | LC_ALL=C grep -EIc -e "$pattern" || true)
+  if [ "${hits:-0}" -gt 0 ]; then
     report "$path (staged)"
   fi
 done < <(git ls-files --cached -z)

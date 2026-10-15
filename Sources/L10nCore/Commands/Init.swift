@@ -74,7 +74,7 @@ public enum InitCommand {
         # l10n-agent configuration. All keys are optional.
         sourceLanguage: \(sourceLanguage)
         # Languages to translate into. Defaults to the Xcode project's knownRegions.
-        locales: \(yamlList(locales))
+        \(locales.isEmpty ? "# locales: [de, ja]" : "locales: \(yamlList(locales))")
         \(catalog.map { "# Catalog that receives new keys from `fix`.\ncatalog: \"\($0)\"" } ?? "# catalog: App/Localizable.xcstrings")
         # auto: generated symbols when STRING_CATALOG_GENERATE_SYMBOLS = YES, else String(localized:) literals.
         codeStyle: auto

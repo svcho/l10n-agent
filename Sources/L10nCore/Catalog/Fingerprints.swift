@@ -19,14 +19,28 @@ public struct FingerprintStore: Sendable {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return FingerprintStore(url: url, entries: [:])
         }
-        let value = try JSONParser.parse(Data(contentsOf: url))
+        // Anything but the exact schema stops the command: silently treating a damaged file
+        // as empty would let the next write erase the stale-translation history.
+        func malformed(_ detail: String) -> L10nError {
+            .config("\(url.path) is malformed (\(detail)); restore it from git, or delete it to start over")
+        }
+        let value: JSONValue
+        do {
+            value = try JSONParser.parse(Data(contentsOf: url))
+        } catch {
+            throw malformed("\(error)")
+        }
+        guard let root = value.objectValue else { throw malformed("expected an object") }
+        guard root["version"] == .number("1") else { throw malformed("unsupported version") }
+        guard let catalogs = root["catalogs"]?.objectValue else { throw malformed("missing \"catalogs\" object") }
         var entries: [String: [ByteKey: [String: String]]] = [:]
-        for catalog in value["catalogs"]?.objectValue?.members ?? [] {
-            for key in catalog.value.objectValue?.members ?? [] {
-                for locale in key.value.objectValue?.members ?? [] {
-                    if let hash = locale.value.stringValue {
-                        entries[catalog.key, default: [:]][ByteKey(key.key), default: [:]][locale.key] = hash
-                    }
+        for catalog in catalogs.members {
+            guard let keys = catalog.value.objectValue else { throw malformed("catalog \(catalog.key) is not an object") }
+            for key in keys.members {
+                guard let locales = key.value.objectValue else { throw malformed("key \(key.key) is not an object") }
+                for locale in locales.members {
+                    guard let hash = locale.value.stringValue else { throw malformed("fingerprint for \(key.key)/\(locale.key) is not a string") }
+                    entries[catalog.key, default: [:]][ByteKey(key.key), default: [:]][locale.key] = hash
                 }
             }
         }

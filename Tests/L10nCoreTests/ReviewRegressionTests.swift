@@ -529,6 +529,14 @@ struct ReviewRegressionTests {
         let (status, output) = TestSupport.shell(["bash", "scripts/secret-scan.sh"], cwd: repo)
         #expect(status != 0)
         #expect(output.contains("config.txt (staged)"))
+
+        // A secret at the start of a large staged blob must not be hidden by SIGPIPE.
+        let big = repo.appendingPathComponent("big.txt")
+        try ("key=\(fakeKey)\n" + String(repeating: "filler line of text\n", count: 200_000)).write(to: big, atomically: true, encoding: .utf8)
+        #expect(TestSupport.shell(["git", "add", "big.txt"], cwd: repo).0 == 0)
+        try "clean\n".write(to: big, atomically: true, encoding: .utf8)
+        let (_, bigOutput) = TestSupport.shell(["bash", "scripts/secret-scan.sh"], cwd: repo)
+        #expect(bigOutput.contains("big.txt (staged)"))
     }
 
     @Test func siblingResourceCatalogsResolveThroughTheOwningProject() throws {
@@ -826,6 +834,33 @@ struct ReviewRegressionTests {
         plan.items[tea].key = decomposed
         let result = try Fixer(project: project).apply(plan)
         #expect(result.applied.count == 2, "\(result.skipped)")
+    }
+
+    @Test func initLeavesLocalesUnsetWhenNoneAreDetected() async throws {
+        let root = try TestSupport.makeProject(["App/Localizable.xcstrings": TestSupport.catalogJSON([:])])
+        _ = try await InitCommand.run(root: root, model: "none")
+        #expect(try Project.discover(root: root).config.locales == nil)
+    }
+
+    @Test func siblingCatalogsInASharedProjectResolvePerTarget() throws {
+        let root = try TestSupport.makeProject([
+            "App.xcodeproj/project.pbxproj": "// stub\n",
+            "FeatureA/Resources/Localizable.xcstrings": TestSupport.catalogJSON(["a.title": TestSupport.manual("A")]),
+            "FeatureA/Sources/View.swift": "import SwiftUI\nstruct V: View { var body: some View { VStack { Text(\"a.title\"); Text(\"b.title\") } } }\n",
+            "FeatureB/Resources/Localizable.xcstrings": TestSupport.catalogJSON(["b.title": TestSupport.manual("B")]),
+        ])
+        let project = try Project.discover(root: root)
+        #expect(project.catalogURLs(forTable: "Localizable", file: root.appendingPathComponent("FeatureA/Sources/View.swift")).map(project.relativePath) == ["FeatureA/Resources/Localizable.xcstrings"])
+        #expect(try Linter(project: project).run(LintOptions(rules: ["L10N004"])).diagnostics.map(\.key) == ["b.title"])
+    }
+
+    @Test func malformedFingerprintStoresAreRejected() throws {
+        for content in ["[]", "{}", #"{"catalogs":[],"version":1}"#, #"{"catalogs":{},"version":2}"#, #"{"catalogs":{"L.xcstrings":{"k":{"de":1}}},"version":1}"#] {
+            let root = try TestSupport.makeProject([".l10n-agent/fingerprints.json": content])
+            #expect(throws: L10nError.self, "\(content)") { try FingerprintStore.load(root: root) }
+        }
+        let valid = try TestSupport.makeProject([".l10n-agent/fingerprints.json": #"{"catalogs":{"L.xcstrings":{"k":{"de":"abc"}}},"version":1}"#])
+        #expect(try FingerprintStore.load(root: valid).fingerprint(catalog: "L.xcstrings", key: "k", locale: "de") == "abc")
     }
 
     // MARK: Plans are untrusted input (M1, M5)

@@ -216,7 +216,15 @@ public struct Project: Sendable {
         // A file owned by a project only sees that project's catalogs.
         let ownerFolders = xcode.projectFiles.map { $0.deletingLastPathComponent().path + "/" }
         if let owner = ownerFolders.filter({ filePath.hasPrefix($0) }).max(by: { $0.count < $1.count }) {
-            return appCandidates.filter { $0.path.hasPrefix(owner) }
+            // Several targets can share one project folder (FeatureA/Sources + FeatureA/Resources):
+            // keep the catalogs whose folder shares the longest path prefix with the file.
+            let owned = appCandidates.filter { $0.path.hasPrefix(owner) }
+            let fileComponents = file.standardizedFileURL.deletingLastPathComponent().pathComponents
+            let shared = owned.map { catalog in
+                (catalog, zip(catalog.deletingLastPathComponent().pathComponents, fileComponents).prefix { $0 == $1 }.count)
+            }
+            guard let best = shared.map(\.1).max() else { return [] }
+            return shared.filter { $0.1 == best }.map(\.0)
         }
         return appCandidates
     }
