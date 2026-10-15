@@ -53,7 +53,9 @@ Out of scope:
 - `*` widths/precisions (`%*d`) count as integer arguments; strings with them are never reordered. The space flag (`% d`) counts only when the conversion ends the word, so prose such as "100% discount" stays text.
 - L10N110 and fix-time symbol checks apply only where symbols are generated (per catalog / per rewritten file).
 - Plural translations are restored and validated against their own source form (`other` only for categories the source lacks).
-- The JSON parser accepts only RFC 8259 numbers; malformed catalogs are reported (L10N100), never rewritten.
+- The JSON parser accepts only RFC 8259 numbers; malformed or blank catalogs are reported (L10N100), never rewritten. Only nonexistent catalog paths start empty.
+- `init` writes `catalog:` only when the project has a single candidate catalog.
+- Migrating translations into an existing key merges only the leaves it lacks; existing leaves always win.
 - Provided plural translations may fill categories next to approved ones; approved categories are ignored, never overwritten.
 - Only conditions that require `DEBUG` (`DEBUG`, `DEBUG && X`, `A || B` with both requiring it) are skipped by the scanner.
 - Plural categories come from the CLDR table in `PluralRules` or `pluralCategories` in the config; unknown languages are reported, never guessed.

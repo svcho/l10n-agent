@@ -32,7 +32,7 @@ public enum InitCommand {
                 try AtomicFile.write(configTemplate(
                     sourceLanguage: project.sourceLanguage,
                     locales: locales,
-                    catalog: project.defaultCatalogURL(for: nil).map(project.relativePath),
+                    catalog: unambiguousCatalog(project).map(project.relativePath),
                     model: detectedModel
                 ), to: configURL)
                 created = true
@@ -54,6 +54,15 @@ public enum InitCommand {
         }
         notes.append("Add a Run Script build phase to see findings in Xcode: l10n-agent lint --format xcode --path \"$SRCROOT\" || true")
         return InitResult(configPath: project.relativePath(configURL), createdConfig: created, baselined: baselined, notes: notes)
+    }
+
+    /// Only pin `catalog:` when the project has a single candidate; otherwise per-file
+    /// target resolution must stay active.
+    static func unambiguousCatalog(_ project: Project) -> URL? {
+        let localizable = project.catalogURLs.filter { $0.lastPathComponent == "Localizable.xcstrings" }
+        if localizable.count == 1 { return localizable[0] }
+        if localizable.isEmpty, project.catalogURLs.count == 1 { return project.catalogURLs[0] }
+        return nil
     }
 
     static func configTemplate(sourceLanguage: String, locales: [String], catalog: String?, model: String?) -> String {

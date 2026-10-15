@@ -107,12 +107,12 @@ public final class TranslationEngine: @unchecked Sendable {
         var units: [TranslationUnit] = []
         var staleApproved: [TranslationIssue] = []
         var unsupported: [TranslationIssue] = []
-        let keyFilter = options.keys.map(Set.init)
+        let keyFilter = options.keys.map { Set($0.map(ByteKey.init)) }
 
         for path in loaded.order {
             guard let catalog = loaded.catalogs[path] else { continue }
             for (key, entry) in catalog.entries {
-                if let keyFilter, !keyFilter.contains(key) { continue }
+                if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
                 guard sourceNode.leaves.contains(where: { !$0.unit.value.isEmpty }) else { continue }
@@ -176,7 +176,14 @@ public final class TranslationEngine: @unchecked Sendable {
                         }
 
                         // Plain string unit.
-                        if underShape.contains(where: { $0.path != shape.path && $0.unit.isApproved }) {
+                        // Leaves under this path that belong to another source shape (e.g. a
+                        // %#@name@ substitution) are planned by that shape, not flagged here.
+                        let otherShapePaths = shapes.map(\.path).filter { $0 != shape.path && $0.count > shape.path.count }
+                        let foreignApproved = underShape.contains { leaf in
+                            leaf.path != shape.path && leaf.unit.isApproved
+                                && !otherShapePaths.contains { Array(leaf.path.prefix($0.count)) == $0 }
+                        }
+                        if foreignApproved {
                             approvedNotes.insert("the approved translation has variations the source does not have; review it in Xcode")
                             complete = false
                             continue
@@ -809,11 +816,11 @@ public final class TranslationEngine: @unchecked Sendable {
         do {
             var loaded = try load(TranslateOptions(locales: locales))
             var count = 0
-            let keyFilter = keys.map(Set.init)
+            let keyFilter = keys.map { Set($0.map(ByteKey.init)) }
             for path in loaded.order {
                 guard let catalog = loaded.catalogs[path] else { continue }
                 for (key, entry) in catalog.entries {
-                    if let keyFilter, !keyFilter.contains(key) { continue }
+                    if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }
                     let fingerprint = FingerprintStore.sourceFingerprint(entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage))
                     for locale in loaded.locales where entry.localization(locale) != nil {
                         if loaded.fingerprints.fingerprint(catalog: path, key: key, locale: locale) != fingerprint {

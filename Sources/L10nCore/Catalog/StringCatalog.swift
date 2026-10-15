@@ -13,8 +13,10 @@ public struct StringCatalog: Sendable {
 
     public static func load(_ url: URL, fallbackSourceLanguage: String = "en") throws -> StringCatalog {
         let data = try Data(contentsOf: url)
+        // An existing but blank file is a truncated catalog: report it instead of
+        // silently replacing it. Only nonexistent paths start from `empty`.
         if data.isEmpty || data.allSatisfy({ $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 }) {
-            return StringCatalog.empty(url: url, sourceLanguage: fallbackSourceLanguage)
+            throw L10nError.catalogParse(path: url.path, message: "The file is empty")
         }
         let value: JSONValue
         do {

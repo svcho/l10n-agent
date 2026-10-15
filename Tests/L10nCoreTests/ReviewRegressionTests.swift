@@ -683,6 +683,93 @@ struct ReviewRegressionTests {
         #expect(loaded.fingerprint(catalog: "App/Localizable.xcstrings", key: decomposed, locale: "de") == "bbb")
     }
 
+    @Test func initPinsACatalogOnlyWhenUnambiguous() async throws {
+        let many = try TestSupport.makeProject([
+            "AppA/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "AppB/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+        ])
+        _ = try await InitCommand.run(root: many, model: "none")
+        #expect(try Project.discover(root: many).config.catalog == nil)
+
+        let one = try TestSupport.makeProject(["App/Localizable.xcstrings": TestSupport.catalogJSON([:])])
+        _ = try await InitCommand.run(root: one, model: "none")
+        #expect(try Project.discover(root: one).config.catalog == "App/Localizable.xcstrings")
+    }
+
+    @Test func blankCatalogsAreReportedNotReplaced() throws {
+        let root = try TestSupport.makeProject(["App/Localizable.xcstrings": "  \n"])
+        #expect(throws: L10nError.self) { try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings")) }
+        let report = try Linter(project: try Project.discover(root: root)).run()
+        #expect(report.diagnostics.map(\.rule) == ["L10N100"])
+    }
+
+    @Test func rootUnitIsPlannedBesideApprovedSubstitutionForms() async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "L.xcstrings": TestSupport.catalogJSON([
+                "files.left": [
+                    "extractionState": "manual", "comment": "c",
+                    "localizations": [
+                        "en": [
+                            "stringUnit": ["state": "translated", "value": "%#@files@ left"],
+                            "substitutions": ["files": ["argNum": 1, "formatSpecifier": "lld", "variations": ["plural": ["one": TestSupport.unit("%arg file"), "other": TestSupport.unit("%arg files")]]]],
+                        ],
+                        "de": [
+                            "substitutions": ["files": ["argNum": 1, "formatSpecifier": "lld", "variations": ["plural": ["one": TestSupport.unit("%arg Datei"), "other": TestSupport.unit("%arg Dateien")]]]],
+                        ],
+                    ],
+                ],
+            ]),
+        ])
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(report.units?.map(\.path) == [[]], "the missing root string is planned")
+        #expect(report.approvedSkipped.isEmpty)
+    }
+
+    @Test func translateKeyFilterIsByteExact() async throws {
+        let precomposed = "caf\u{E9}.title"
+        let decomposed = "cafe\u{301}.title"
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            // Swift dictionaries merge the two spellings, so write the catalog as raw JSON.
+            "L.xcstrings": "{\"sourceLanguage\":\"en\",\"version\":\"1.1\",\"strings\":{"
+                + "\"\(precomposed)\":{\"comment\":\"c\",\"extractionState\":\"manual\",\"localizations\":{\"en\":{\"stringUnit\":{\"state\":\"translated\",\"value\":\"One\"}}}},"
+                + "\"\(decomposed)\":{\"comment\":\"c\",\"extractionState\":\"manual\",\"localizations\":{\"en\":{\"stringUnit\":{\"state\":\"translated\",\"value\":\"Two\"}}}}}}",
+        ])
+        let report = try await TranslationEngine(project: try Project.discover(root: root)).run(TranslateOptions(keys: [decomposed], dryRun: true), model: nil)
+        #expect(report.units?.count == 1)
+        #expect(report.units?.first?.source == "Two")
+    }
+
+    @Test func migrationMergesMissingLeavesIntoAnExistingLocalization() throws {
+        let plural: (String, String, String) -> [String: Any] = { one, other, state in
+            ["variations": ["plural": ["one": TestSupport.unit(one, state: state), "other": TestSupport.unit(other, state: state)]]]
+        }
+        var existing = TestSupport.manual("%lld files")
+        existing["localizations"] = [
+            "en": ["stringUnit": ["state": "translated", "value": "%lld files"]],
+            "de": ["variations": ["plural": ["one": TestSupport.unit("%lld Datei (neu)")]]],
+        ]
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\nlocales: [de]\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([
+                "home.files": existing,
+                "%lld files": ["localizations": ["de": plural("%lld Datei", "%lld Dateien", "translated")]],
+            ]),
+            "App/HomeView.swift": "import SwiftUI\nstruct HomeView: View { let count = 2; var body: some View { Text(\"\\(count) files\") } }\n",
+        ])
+        let project = try Project.discover(root: root)
+        var plan = try Fixer(project: project).plan()
+        let index = try #require(plan.items.firstIndex { $0.sourceValue == "%lld files" })
+        #expect(plan.items[index].key == "home.files")
+        plan.items[index].status = .ready
+        _ = try Fixer(project: project).apply(plan)
+        let de = try #require(try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings")).entry("home.files")?.localization("de"))
+        let byCategory = Dictionary(uniqueKeysWithValues: de.leaves.map { ($0.path.last!, $0.unit.value) })
+        #expect(byCategory["one"] == "%lld Datei (neu)", "existing leaf kept")
+        #expect(byCategory["other"] == "%lld Dateien", "missing leaf merged from the text key")
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

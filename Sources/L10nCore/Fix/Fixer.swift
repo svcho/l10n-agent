@@ -518,8 +518,13 @@ public struct Fixer {
                 let oldSource = old.sourceNode(key: migrateFrom, sourceLanguage: target.sourceLanguage)
                 let sameText = oldSource.leaves.map(\.unit.value) == [item.sourceValue]
                 let newFingerprint = FingerprintStore.sourceFingerprint(entry.sourceNode(key: item.key, sourceLanguage: target.sourceLanguage))
-                for locale in old.localizationLocales where locale != target.sourceLanguage && entry.localization(locale) == nil {
+                for locale in old.localizationLocales where locale != target.sourceLanguage {
                     guard let node = old.localization(locale) else { continue }
+                    if let existing = entry.localization(locale) {
+                        // Keep every leaf the semantic key already has; add the ones it lacks.
+                        entry.setLocalization(locale, LocalizationNode(raw: Self.mergeMissing(into: existing.raw, from: node.raw)))
+                        continue
+                    }
                     entry.setLocalization(locale, node)
                     if sameText {
                         fingerprints.set(catalog: item.catalog, key: item.key, locale: locale, fingerprint: newFingerprint)
@@ -568,6 +573,28 @@ public struct Fixer {
         result.filesChanged.sort()
         result.catalogsChanged.sort()
         return result
+    }
+
+    /// Adds members of `source` that `destination` lacks, recursively; `destination` always
+    /// wins. Nodes whose shape differs (plain `stringUnit` vs `variations`) are not mixed.
+    static func mergeMissing(into destination: JSONObject, from source: JSONObject) -> JSONObject {
+        let destinationPlain = destination.contains("stringUnit")
+        let destinationVaried = destination.contains("variations")
+        if (destinationPlain && source.contains("variations") && !destinationVaried)
+            || (destinationVaried && source.contains("stringUnit") && !destinationPlain) {
+            return destination
+        }
+        var merged = destination
+        for member in source.members {
+            if let existing = merged[member.key] {
+                if case .object(let existingObject) = existing, case .object(let sourceObject) = member.value, member.key != "stringUnit" {
+                    merged[member.key] = .object(mergeMissing(into: existingObject, from: sourceObject))
+                }
+            } else {
+                merged[member.key] = member.value
+            }
+        }
+        return merged
     }
 
     static func syntaxErrorCount(_ source: String) -> Int {
