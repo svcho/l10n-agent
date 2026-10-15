@@ -278,6 +278,12 @@ public struct Linter {
                     if let recorded = fingerprints.fingerprint(catalog: file, key: key, locale: locale), recorded != currentFingerprint {
                         stale.append(locale)
                     }
+                    for (name, substitution) in target.substitutions.sorted(by: { $0.key < $1.key }) {
+                        guard let expected = sourceNode.substitutions[name] else { continue }
+                        if substitution.argNum != expected.argNum || substitution.formatSpecifier != expected.formatSpecifier {
+                            add(Rules.formatMismatch, "Translation \(locale) of \"\(key)\": substitution %#@\(name)@ uses argument \(substitution.argNum.map(String.init) ?? "?") (\(substitution.formatSpecifier ?? "?")) but the source uses \(expected.argNum.map(String.init) ?? "?") (\(expected.formatSpecifier ?? "?"))", key: key, locales: [locale])
+                        }
+                    }
                     for leaf in leaves {
                         guard let match = FormatParity.sourceLeaf(for: leaf.path, in: sourceNode) else { continue }
                         if let problem = FormatParity.problem(source: match.leaf.value, target: leaf.unit.value, allowsOmission: match.isPluralCase && leaf.path.last != "other") {

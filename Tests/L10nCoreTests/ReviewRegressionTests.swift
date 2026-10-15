@@ -537,6 +537,15 @@ struct ReviewRegressionTests {
         try "clean\n".write(to: big, atomically: true, encoding: .utf8)
         let (_, bigOutput) = TestSupport.shell(["bash", "scripts/secret-scan.sh"], cwd: repo)
         #expect(bigOutput.contains("big.txt (staged)"))
+
+        // Binary blobs (with NUL bytes) are scanned too.
+        var binary = Data([0x00, 0x01, 0x02, 0x00])
+        binary.append(Data(fakeKey.utf8))
+        binary.append(Data([0x00, 0xFF]))
+        try binary.write(to: repo.appendingPathComponent("blob.bin"))
+        #expect(TestSupport.shell(["git", "add", "blob.bin"], cwd: repo).0 == 0)
+        let (_, binaryOutput) = TestSupport.shell(["bash", "scripts/secret-scan.sh"], cwd: repo)
+        #expect(binaryOutput.contains("blob.bin (staged)"))
     }
 
     @Test func siblingResourceCatalogsResolveThroughTheOwningProject() throws {
@@ -974,6 +983,51 @@ struct ReviewRegressionTests {
         #expect(project.xcode.owningProject(for: file) == nil)
         #expect(!project.usesSymbols(for: file))
         #expect(try Fixer(project: project).plan().items.first?.replacement.contains("defaultValue:") == true)
+    }
+
+    @Test func substitutionMetadataCountsForStalenessAndParity() throws {
+        func node(argNum: Int, specifier: String) -> LocalizationNode {
+            var node = LocalizationNode(unit: StringUnit(state: "translated", value: "%#@n@ left"))
+            node.setValue(.number(String(argNum)), at: ["substitutions", "n", "argNum"])
+            node.setValue(.string(specifier), at: ["substitutions", "n", "formatSpecifier"])
+            node.setUnit(StringUnit(state: "translated", value: "%arg left"), at: ["substitutions", "n", "variations", "plural", "other"])
+            return node
+        }
+        #expect(FingerprintStore.sourceFingerprint(node(argNum: 1, specifier: "lld")) != FingerprintStore.sourceFingerprint(node(argNum: 2, specifier: "lld")))
+        #expect(FingerprintStore.sourceFingerprint(LocalizationNode(unit: StringUnit(state: "translated", value: "Hi"))) == Hashing.shortHash("=Hi"), "plain strings keep their fingerprint")
+
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "L.xcstrings": TestSupport.catalogJSON(["left": [
+                "extractionState": "manual", "comment": "c",
+                "localizations": [
+                    "en": ["stringUnit": ["state": "translated", "value": "%#@n@ left"], "substitutions": ["n": ["argNum": 2, "formatSpecifier": "lld", "variations": ["plural": ["one": TestSupport.unit("%arg item"), "other": TestSupport.unit("%arg items")]]]]],
+                    "de": ["stringUnit": ["state": "translated", "value": "noch %#@n@"], "substitutions": ["n": ["argNum": 1, "formatSpecifier": "lld", "variations": ["plural": ["one": TestSupport.unit("%arg Element"), "other": TestSupport.unit("%arg Elemente")]]]]],
+                ],
+            ]]),
+        ])
+        let lint = try Linter(project: try Project.discover(root: root)).run(LintOptions(rules: ["L10N104"]))
+        #expect(lint.diagnostics.first?.message.contains("substitution %#@n@") == true)
+    }
+
+    @Test func languageSpecificVariationsCountAsComplete() async throws {
+        let source = TestSupport.manual("%lld files")
+        func project(_ de: [String: Any]) throws -> Project {
+            var entry = source
+            var localizations = entry["localizations"] as! [String: Any]
+            localizations["de"] = de
+            entry["localizations"] = localizations
+            return try Project.discover(root: try TestSupport.makeProject([".l10n-agent.yml": "locales: [de]\n", "L.xcstrings": TestSupport.catalogJSON(["files": entry])]))
+        }
+        let complete = try project(["variations": ["plural": ["one": TestSupport.unit("%lld Datei"), "other": TestSupport.unit("%lld Dateien")]]])
+        #expect(try Linter(project: complete).run(LintOptions(rules: ["L10N101"])).diagnostics.isEmpty)
+        #expect(try await TranslationEngine(project: complete).run(TranslateOptions(dryRun: true), model: nil).planned == 0)
+
+        let partial = try project(["variations": ["plural": ["one": TestSupport.unit("%lld Datei")]]])
+        #expect(try Linter(project: partial).run(LintOptions(rules: ["L10N101"])).diagnostics.first?.locales == ["de"])
+        let report = try await TranslationEngine(project: partial).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(report.planned == 0, "language-specific variations are never machine-translated")
+        #expect(report.approvedSkipped.first?.reason.contains("finish them in Xcode") == true)
     }
 
     // MARK: Plans are untrusted input (M1, M5)

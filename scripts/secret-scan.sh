@@ -19,7 +19,8 @@ while IFS= read -r -d '' path; do
   [ "$path" = "$self" ] && continue
   # grep -c reads the whole blob: an early-exiting `grep -q` would SIGPIPE `git show`,
   # and with pipefail the pipeline would then look clean.
-  hits=$(git show ":$path" 2>/dev/null | LC_ALL=C grep -EIc -e "$pattern" || true)
+  # -a: binary blobs are scanned as text too (-I would skip them).
+  hits=$(git show ":$path" 2>/dev/null | LC_ALL=C grep -Eac -e "$pattern" || true)
   if [ "${hits:-0}" -gt 0 ]; then
     report "$path (staged)"
   fi
@@ -29,7 +30,7 @@ done < <(git ls-files --cached -z)
 while IFS= read -r -d '' path; do
   [ "$path" = "$self" ] && continue
   [ -f "$path" ] || continue
-  if LC_ALL=C grep -EIq -e "$pattern" "$path"; then
+  if LC_ALL=C grep -Eaq -e "$pattern" "$path"; then
     report "$path"
   fi
 done < <(git ls-files --cached --others --exclude-standard -z)

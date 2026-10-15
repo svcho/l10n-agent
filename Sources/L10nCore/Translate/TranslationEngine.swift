@@ -175,17 +175,17 @@ public final class TranslationEngine: @unchecked Sendable {
                             continue
                         }
 
-                        // Plain string unit.
-                        // Leaves under this path that belong to another source shape (e.g. a
-                        // %#@name@ substitution) are planned by that shape, not flagged here.
-                        let otherShapePaths = shapes.map(\.path).filter { $0 != shape.path && $0.count > shape.path.count }
-                        let foreignApproved = underShape.contains { leaf in
-                            leaf.path != shape.path && leaf.unit.isApproved
-                                && !otherShapePaths.contains { Array(leaf.path.prefix($0.count)) == $0 }
-                        }
-                        if foreignApproved {
-                            approvedNotes.insert("the approved translation has variations the source does not have; review it in Xcode")
-                            complete = false
+                        // Plain string unit. A language may vary it by plural/device on its own
+                        // (Xcode "Vary by Plural" per language): never machine-translate those,
+                        // and only flag them when incomplete or when the source changed.
+                        if let target, let varied = Self.languageVariationsComplete(target, at: shape.path, categories: knownCategories) {
+                            if !varied {
+                                approvedNotes.insert("the translation varies by plural/device but some cases are empty; finish them in Xcode")
+                                complete = false
+                            } else if isStale {
+                                approvedNotes.insert("source changed after this translation was approved; review it in Xcode, then run `l10n-agent accept`")
+                                complete = false
+                            }
                             continue
                         }
                         let leaf = underShape.first { $0.path == shape.path }
@@ -289,9 +289,29 @@ public final class TranslationEngine: @unchecked Sendable {
                 guard let categories else { return false }
                 return hasAllCategories(targetLeaves(target, shape: shape), categories: categories)
             }
-            // Plain shapes, including each device variation, must exist at their own path.
+            // Plain shapes, including each device variation, must exist at their own path, or the
+            // language varies the string itself (Xcode's per-language "Vary by Plural/Device").
             return leaves.contains { $0.path == shape.path }
+                || languageVariationsComplete(target, at: shape.path, categories: categories) == true
         }
+    }
+
+    /// For a translation that adds its own variations where the source is plain: `nil` when
+    /// there are none, otherwise whether every case is filled (plural: every CLDR category).
+    static func languageVariationsComplete(_ target: LocalizationNode, at path: [String], categories: [String]?) -> Bool? {
+        guard let object = path.isEmpty ? target.raw : target.value(at: path)?.objectValue else { return nil }
+        let variations = LocalizationNode(raw: object).variations
+        guard !variations.isEmpty else { return nil }
+        for (kind, cases) in variations {
+            if kind == "plural" {
+                guard let categories, categories.allSatisfy({ cases[$0] != nil }) else { return false }
+            }
+            for node in cases.values {
+                let leaves = node.leaves
+                if leaves.isEmpty || leaves.contains(where: \.unit.isMissing) { return false }
+            }
+        }
+        return true
     }
 
     static func hasAllCategories(_ leaves: [LocalizationNode.Leaf], categories: [String]) -> Bool {

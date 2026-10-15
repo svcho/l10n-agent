@@ -89,8 +89,13 @@ public struct FingerprintStore: Sendable {
     }
 
     /// Fingerprint of a key's source-language content (all variation values, not the comment).
+    /// Includes substitution metadata (`argNum`, `formatSpecifier`) when present, so changing
+    /// which argument a `%#@name@` plural uses also marks translations stale.
     public static func sourceFingerprint(_ node: LocalizationNode) -> String {
-        let material = node.leaves.map { "\($0.path.joined(separator: "/"))=\($0.unit.value)" }.joined(separator: "\u{1E}")
-        return Hashing.shortHash(material)
+        var parts = node.leaves.map { "\($0.path.joined(separator: "/"))=\($0.unit.value)" }
+        for (name, substitution) in node.substitutions.sorted(by: { $0.key < $1.key }) {
+            parts.append("substitution/\(name)=\(substitution.argNum.map(String.init) ?? "")/\(substitution.formatSpecifier ?? "")")
+        }
+        return Hashing.shortHash(parts.joined(separator: "\u{1E}"))
     }
 }
