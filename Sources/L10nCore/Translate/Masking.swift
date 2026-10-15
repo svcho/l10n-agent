@@ -10,6 +10,9 @@ public struct MaskedText: Equatable, Sendable {
     var substitutions: Set<String>
     var hasPercentLiteral: Bool
     var hasSubstitutionArgument: Bool
+    /// Value argument indices in source order when `*` widths are present; such strings
+    /// cannot be reordered because positional `*` forms are not generated.
+    var dynamicWidthOrder: [Int]?
     /// Whether the source used `n$` positions.
     var positional: Bool
 
@@ -23,6 +26,8 @@ public struct MaskedText: Equatable, Sendable {
         var hasPercentLiteral = false
         var hasSubstitutionArgument = false
         var positional = false
+        var valueOrder: [Int] = []
+        var hasDynamicWidth = false
         var cursor = source.startIndex
         for token in FormatSpecifier.tokens(in: source) {
             text += source[cursor..<token.range.lowerBound]
@@ -33,6 +38,8 @@ public struct MaskedText: Equatable, Sendable {
             case .argument(let index, _):
                 text += "⟦\(index)⟧"
                 if arguments[index] == nil { arguments[index] = FormatSpecifier.stripPosition(token.text) }
+                valueOrder.append(index)
+                hasDynamicWidth = hasDynamicWidth || !token.widthArguments.isEmpty
                 positional = positional || token.isPositional
             case .substitution(let name):
                 text += "⟦@\(name)⟧"
@@ -49,6 +56,7 @@ public struct MaskedText: Equatable, Sendable {
         self.substitutions = substitutions
         self.hasPercentLiteral = hasPercentLiteral
         self.hasSubstitutionArgument = hasSubstitutionArgument
+        self.dynamicWidthOrder = hasDynamicWidth ? valueOrder : nil
         self.positional = positional
     }
 
@@ -57,11 +65,13 @@ public struct MaskedText: Equatable, Sendable {
     public enum UnmaskError: Error, Equatable, CustomStringConvertible {
         case unknownToken(String)
         case unbalanced
+        case reorderedDynamicWidth
 
         public var description: String {
             switch self {
             case .unknownToken(let token): return "unknown placeholder ⟦\(token)⟧"
             case .unbalanced: return "broken placeholder brackets"
+            case .reorderedDynamicWidth: return "placeholders with a dynamic width (%*d) must keep their original order"
             }
         }
     }
@@ -91,8 +101,13 @@ public struct MaskedText: Equatable, Sendable {
         let argumentOrder = parts.compactMap { $0.isToken ? Int($0.value) : nil }
         var seen: [Int] = []
         for argument in argumentOrder where !seen.contains(argument) { seen.append(argument) }
+        if let dynamicWidthOrder {
+            guard argumentOrder == dynamicWidthOrder else { throw UnmaskError.reorderedDynamicWidth }
+        }
         let contiguousInOrder = seen.isEmpty || seen == Array(1...seen.count)
-        let usePositions = positional || !contiguousInOrder || argumentOrder.count != seen.count
+        let usePositions = dynamicWidthOrder == nil
+            ? (positional || !contiguousInOrder || argumentOrder.count != seen.count)
+            : positional
 
         let escapeRawPercent = hasTokens
         var output = ""

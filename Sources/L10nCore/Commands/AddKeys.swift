@@ -64,7 +64,7 @@ public enum AddKeysCommand {
                     }
                     continue
                 }
-                if project.usesSymbols {
+                if project.usesSymbols(for: catalog.url) {
                     guard let reference = SymbolNaming.reference(for: item.key, table: catalog.tableName) else {
                         result.rejected[item.key] = "too close to a Swift keyword to generate a symbol"
                         continue

@@ -49,11 +49,29 @@ private final class ScanVisitor: SyntaxVisitor {
     // MARK: Skipped regions
 
     override func visit(_ node: IfConfigClauseSyntax) -> SyntaxVisitorContinueKind {
-        if let condition = node.condition, node.poundKeyword.tokenKind != .poundElse,
-           condition.trimmedDescription.contains("DEBUG"), !condition.trimmedDescription.contains("!DEBUG") {
+        if let condition = node.condition, node.poundKeyword.tokenKind != .poundElse, Self.requiresDebug(condition) {
             return .skipChildren
         }
         return .visitChildren
+    }
+
+    /// `true` only when the condition can hold in debug builds alone: `DEBUG`,
+    /// `DEBUG && X`, `(DEBUG)`, or `A || B` where both sides require `DEBUG`.
+    static func requiresDebug(_ condition: ExprSyntax) -> Bool {
+        if let reference = condition.as(DeclReferenceExprSyntax.self) {
+            return reference.baseName.text == "DEBUG"
+        }
+        if let tuple = condition.as(TupleExprSyntax.self), tuple.elements.count == 1, let inner = tuple.elements.first?.expression {
+            return requiresDebug(inner)
+        }
+        if let infix = condition.as(InfixOperatorExprSyntax.self), let op = infix.operator.as(BinaryOperatorExprSyntax.self) {
+            switch op.operator.text {
+            case "&&": return requiresDebug(infix.leftOperand) || requiresDebug(infix.rightOperand)
+            case "||": return requiresDebug(infix.leftOperand) && requiresDebug(infix.rightOperand)
+            default: return false
+            }
+        }
+        return false
     }
 
     override func visit(_ node: MacroExpansionExprSyntax) -> SyntaxVisitorContinueKind {

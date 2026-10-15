@@ -5,8 +5,26 @@ public struct XcodeSettings: Equatable, Sendable {
     public var projectFiles: [URL] = []
     public var knownRegions: [String] = []
     public var developmentRegion: String?
-    /// `true` when any build configuration sets `STRING_CATALOG_GENERATE_SYMBOLS = YES`.
-    public var generatesSymbols: Bool = false
+    /// `true` when any project generates String Catalog symbols.
+    public var generatesSymbols: Bool { symbolGeneration.values.contains(.enabled) }
+    /// Per `.xcodeproj` (keyed by its path): whether symbol generation is on for every
+    /// build configuration that sets it. Mixed projects count as disabled for rewrites.
+    public var symbolGeneration: [String: SymbolGeneration] = [:]
+
+    public enum SymbolGeneration: String, Equatable, Sendable {
+        case enabled
+        case disabled
+        case mixed
+    }
+
+    /// The setting of the project that owns `file`: the `.xcodeproj` whose folder is the
+    /// nearest ancestor of the file, or the only project.
+    public func symbolGeneration(for file: URL) -> SymbolGeneration {
+        let filePath = file.standardizedFileURL.path
+        let owners = projectFiles.filter { filePath.hasPrefix($0.deletingLastPathComponent().path + "/") }
+        let owner = owners.max(by: { $0.path.count < $1.path.count }) ?? (projectFiles.count == 1 ? projectFiles[0] : nil)
+        return owner.flatMap { symbolGeneration[$0.path] } ?? .disabled
+    }
 
     public static func read(projects: [URL]) -> XcodeSettings {
         var settings = XcodeSettings()
@@ -23,9 +41,9 @@ public struct XcodeSettings: Equatable, Sendable {
             if settings.developmentRegion == nil, let match = text.firstMatch(of: /developmentRegion\s*=\s*"?([A-Za-z0-9_-]+)"?\s*;/) {
                 settings.developmentRegion = String(match.1)
             }
-            if text.contains(/STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*YES/) {
-                settings.generatesSymbols = true
-            }
+            let enabled = text.matches(of: /STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*"?YES"?/).count
+            let disabled = text.matches(of: /STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*"?NO"?/).count
+            settings.symbolGeneration[project.path] = enabled > 0 ? (disabled > 0 ? .mixed : .enabled) : .disabled
         }
         settings.knownRegions = regions
         return settings
@@ -122,12 +140,35 @@ public struct Project: Sendable {
         return found.sorted()
     }
 
+    /// Whether any code in the project may use generated symbols (used for symbol
+    /// collision checks and reporting).
     public var usesSymbols: Bool {
         switch config.codeStyle {
         case .symbols: return true
         case .literal: return false
         case .auto: return xcode.generatesSymbols
         }
+    }
+
+    /// Whether rewrites in `file` may reference generated symbols. With `codeStyle: auto`
+    /// this requires the owning Xcode project to enable symbol generation in every
+    /// configuration; Swift package targets use literals.
+    public func usesSymbols(for file: URL) -> Bool {
+        switch config.codeStyle {
+        case .symbols: return true
+        case .literal: return false
+        case .auto:
+            if PackageTarget.directory(for: file, root: root) != nil { return false }
+            return xcode.symbolGeneration(for: file) == .enabled
+        }
+    }
+
+    /// Code style summary for a set of files: `symbols`, `literal` or `mixed`.
+    public func codeStyleSummary(files: [URL]) -> String {
+        let styles = Set(files.map { usesSymbols(for: $0) })
+        if styles.isEmpty { return usesSymbols ? CodeStyle.symbols.rawValue : CodeStyle.literal.rawValue }
+        if styles.count > 1 { return "mixed" }
+        return styles.first! ? CodeStyle.symbols.rawValue : CodeStyle.literal.rawValue
     }
 
     public func loadCatalogs() throws -> [StringCatalog] {

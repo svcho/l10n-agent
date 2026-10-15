@@ -433,6 +433,87 @@ struct ReviewRegressionTests {
         #expect(try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings")).entry("Welcome back")?.isStale == true)
     }
 
+    @Test func brokenFingerprintsStopApplyBeforeAnySourceWrite() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: literal\n",
+            ".l10n-agent/fingerprints.json": "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "App/View.swift": "func f() { label.text = \"Hello there\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        let plan = try Fixer(project: project).plan()
+        #expect(throws: (any Error).self) { try Fixer(project: project).apply(plan) }
+        #expect(try String(contentsOf: root.appendingPathComponent("App/View.swift"), encoding: .utf8) == "func f() { label.text = \"Hello there\" }\n")
+    }
+
+    @Test func symbolGenerationIsResolvedPerProjectAndTarget() throws {
+        let enabled = "STRING_CATALOG_GENERATE_SYMBOLS = YES;\n"
+        let root = try TestSupport.makeProject([
+            "A/AppA.xcodeproj/project.pbxproj": enabled,
+            "A/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "A/View.swift": "func f() { label.text = \"Hello from A\" }\n",
+            "B/AppB.xcodeproj/project.pbxproj": enabled + "STRING_CATALOG_GENERATE_SYMBOLS = NO;\n",
+            "B/Localizable.xcstrings": TestSupport.catalogJSON([:]),
+            "B/View.swift": "func f() { label.text = \"Hello from B\" }\n",
+            "A/Packages/Kit/Package.swift": "// swift-tools-version: 6.0\n",
+            "A/Packages/Kit/Sources/Kit/K.swift": "func f() { label.text = \"Hello from Kit\" }\n",
+        ])
+        let project = try Project.discover(root: root)
+        #expect(project.xcode.symbolGeneration(for: root.appendingPathComponent("B/View.swift")) == .mixed)
+        let plan = try Fixer(project: project).plan()
+        #expect(plan.codeStyle == "mixed")
+        func replacement(_ prefix: String) -> String { plan.items.first { $0.file.hasPrefix(prefix) }?.replacement ?? "" }
+        #expect(replacement("A/View.swift").hasPrefix("String(localized: ."), "A generates symbols")
+        #expect(replacement("B/").contains("defaultValue:"), "B is mixed, so literals")
+        #expect(replacement("A/Packages/").contains("bundle: .module"), "package targets use literals")
+        #expect(try Fixer(project: project).apply(plan).applied.count == 3)
+    }
+
+    @Test func initHoldsTheProjectLock() async throws {
+        let root = try TestSupport.makeProject(["App/Localizable.xcstrings": TestSupport.catalogJSON([:])])
+        let lock = try ProjectLock.acquire(root: root)
+        await #expect(throws: L10nError.self) { _ = try await InitCommand.run(root: root, model: "none") }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(L10nConfig.fileName).path))
+        lock.release()
+        let result = try await InitCommand.run(root: root, model: "none")
+        #expect(result.createdConfig)
+    }
+
+    @Test func dynamicWidthsCountAsArguments() throws {
+        #expect(FormatSpecifier.argumentSignature(of: "%*d items") == [1: .integer, 2: .integer])
+        #expect(FormatSpecifier.argumentSignature(of: "%@ %.*f") == [1: .object, 2: .integer, 3: .double])
+        #expect(FormatParity.problem(source: "%*d items", target: "%d Elemente") != nil)
+        #expect(FormatParity.problem(source: "%*d items", target: "%*d Elemente") == nil)
+        // The width consumes argument 2, so the value is ⟦3⟧.
+        let masked = MaskedText(source: "%@ scored %*d points")
+        #expect(masked.text == "⟦1⟧ scored ⟦3⟧ points")
+        #expect(try masked.unmask("⟦1⟧ hat ⟦3⟧ Punkte") == "%@ hat %*d Punkte")
+        #expect(throws: MaskedText.UnmaskError.self) { try masked.unmask("⟦3⟧ Punkte für ⟦1⟧") }
+    }
+
+    @Test func onlyDebugOnlyConditionsAreSkipped() {
+        let sites = SwiftScanner().scan(source: """
+        func f() {
+            #if DEBUG || os(iOS)
+            label.text = "Shipping text one"
+            #endif
+            #if DEBUG && TRACE
+            label.text = "Debug text one"
+            #endif
+            #if (DEBUG)
+            label.text = "Debug text two"
+            #endif
+            #if !DEBUG
+            label.text = "Shipping text two"
+            #endif
+            #if FEATURE || DEBUG
+            label.text = "Shipping text three"
+            #endif
+        }
+        """, path: "App/F.swift")
+        #expect(Set(sites.map(\.displayText)) == ["Shipping text one", "Shipping text two", "Shipping text three"])
+    }
+
     // MARK: Plans are untrusted input (M1, M5)
 
     @Test func craftedPlanCannotInjectCodeOrWriteElsewhere() throws {

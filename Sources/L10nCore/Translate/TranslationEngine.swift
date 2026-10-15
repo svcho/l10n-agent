@@ -786,6 +786,13 @@ public final class TranslationEngine: @unchecked Sendable {
     /// Marks current translations as matching the current source (after a human reviewed them).
     public func accept(keys: [String]?, locales: [String]?) throws -> Int {
         try ProjectLock.withLock(root: project.root) {
+            try acceptLocked(keys: keys, locales: locales)
+        }
+    }
+
+    /// `accept` for callers that already hold the project lock.
+    func acceptLocked(keys: [String]?, locales: [String]?) throws -> Int {
+        do {
             var loaded = try load(TranslateOptions(locales: locales))
             var count = 0
             let keyFilter = keys.map(Set.init)

@@ -125,12 +125,13 @@ public struct Fixer {
                     reusesExistingKey: reuses,
                     migrateFrom: migrateFrom
                 )
-                item.replacement = Self.replacement(for: item, usesSymbols: usesSymbols, table: catalog.tableName, moduleBundle: isInSwiftPackage(url))
+                item.replacement = Self.replacement(for: item, usesSymbols: project.usesSymbols(for: url), table: catalog.tableName, moduleBundle: isInSwiftPackage(url))
                 items.append(item)
             }
         }
 
-        return FixPlan(version: 1, codeStyle: usesSymbols ? CodeStyle.symbols.rawValue : CodeStyle.literal.rawValue, files: fileHashes, items: items)
+        let style = project.codeStyleSummary(files: fileHashes.keys.sorted().map { project.root.appendingPathComponent($0) })
+        return FixPlan(version: 1, codeStyle: style, files: fileHashes, items: items)
     }
 
     /// Sites with a fixable finding, honoring rule selection and inline suppressions.
@@ -319,8 +320,10 @@ public struct Fixer {
     private func applyLocked(_ plan: FixPlan, includeReview: Bool) throws -> ApplyResult {
         var result = ApplyResult(applied: [], skipped: [:], filesChanged: [], catalogsChanged: [], keysAdded: [], notes: [])
         // The rewrite style follows the project, never the plan.
+        // Symbol collision checks apply whenever any code may use symbols; the rewrite style
+        // itself is decided per file below.
         let usesSymbols = project.usesSymbols
-        let projectStyle = usesSymbols ? CodeStyle.symbols.rawValue : CodeStyle.literal.rawValue
+        let projectStyle = project.codeStyleSummary(files: plan.files.keys.sorted().map { project.root.appendingPathComponent($0) })
         guard plan.codeStyle == projectStyle else {
             throw L10nError.planConflict("the plan uses \(plan.codeStyle) style but the project uses \(projectStyle); re-run fix to plan again")
         }
@@ -443,9 +446,13 @@ public struct Fixer {
                 }
             }
             assignedValues[assignmentKey] = item.sourceValue
-            item.replacement = Self.replacement(for: item, usesSymbols: usesSymbols, table: target.tableName, moduleBundle: isInSwiftPackage(fileURL))
+            item.replacement = Self.replacement(for: item, usesSymbols: project.usesSymbols(for: fileURL), table: target.tableName, moduleBundle: isInSwiftPackage(fileURL))
             accepted.append((item, catalogPath))
         }
+
+        // Load all remaining state that can fail before any source file is written, so a
+        // broken fingerprints file cannot leave code pointing at keys that were never added.
+        var fingerprints = try FingerprintStore.load(root: project.root)
 
         // 2. Rewrite code, last edit first so earlier offsets stay valid.
         var appliedItems: [FixItem] = []
@@ -487,7 +494,6 @@ public struct Fixer {
                 }
             }
         }
-        var fingerprints = try FingerprintStore.load(root: project.root)
         var added: Set<String> = []
         for item in appliedItems.sorted(by: { ($0.file, $0.range.start) < ($1.file, $1.range.start) }) {
             var target = try catalog(item.catalog)
@@ -522,7 +528,7 @@ public struct Fixer {
                 }
             }
             target.setEntry(item.key, entry)
-            if usesSymbols, target.version == "1.0" {
+            if project.usesSymbols(for: project.root.appendingPathComponent(item.file)), target.version == "1.0" {
                 target.version = "1.1"
                 result.notes.append("\(item.catalog): upgraded catalog format to 1.1 for generated symbols")
             }

@@ -16,45 +16,44 @@ public enum InitCommand {
         var notes: [String] = []
         var created = false
 
-        if !FileManager.default.fileExists(atPath: configURL.path) || force {
-            let catalogs = (try? project.loadCatalogs()) ?? []
-            let locales = project.targetLocales(catalogs: catalogs)
-            var detectedModel = model
-            if detectedModel == nil, let baseURL = URL(string: project.config.translator.baseURL), HTTP.isLocal(baseURL),
-               let installed = try? await OllamaChatModel.installedModels(baseURL: baseURL) {
-                detectedModel = installed.first { !$0.isRemote }?.name
-            }
-            let catalog = project.defaultCatalogURL(for: nil).map(project.relativePath)
-            let lock = try ProjectLock.acquire(root: project.root)
-            defer { lock.release() }
-            try AtomicFile.write(configTemplate(
-                sourceLanguage: project.sourceLanguage,
-                locales: locales,
-                catalog: catalog,
-                model: detectedModel
-            ), to: configURL)
-            created = true
-            if locales.isEmpty {
-                notes.append("No target locales detected. Add languages in Xcode (Project > Info > Localizations) or list them under `locales:`.")
-            }
-            if detectedModel == nil {
-                notes.append("No local Ollama model found. Install one (e.g. `ollama pull qwen3`) and set translator.model.")
-            }
-        } else {
-            notes.append("\(L10nConfig.fileName) already exists; left unchanged (use --force to overwrite).")
+        // Detect settings (and probe a local model) before taking the lock.
+        let needsConfig = !FileManager.default.fileExists(atPath: configURL.path) || force
+        let catalogs = (try? project.loadCatalogs()) ?? []
+        let locales = project.targetLocales(catalogs: catalogs)
+        var detectedModel = model
+        if needsConfig, detectedModel == nil, let baseURL = URL(string: project.config.translator.baseURL), HTTP.isLocal(baseURL),
+           let installed = try? await OllamaChatModel.installedModels(baseURL: baseURL) {
+            detectedModel = installed.first { !$0.isRemote }?.name
         }
 
-        let stateDirectory = project.root.appendingPathComponent(".l10n-agent")
-        try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
-        let ignore = stateDirectory.appendingPathComponent(".gitignore")
-        if !FileManager.default.fileExists(atPath: ignore.path) {
-            try AtomicFile.write("lock\n", to: ignore)
-        }
+        // Every write below happens under one project lock.
+        let baselined: Int = try ProjectLock.withLock(root: project.root) {
+            if needsConfig {
+                try AtomicFile.write(configTemplate(
+                    sourceLanguage: project.sourceLanguage,
+                    locales: locales,
+                    catalog: project.defaultCatalogURL(for: nil).map(project.relativePath),
+                    model: detectedModel
+                ), to: configURL)
+                created = true
+                if locales.isEmpty {
+                    notes.append("No target locales detected. Add languages in Xcode (Project > Info > Localizations) or list them under `locales:`.")
+                }
+                if detectedModel == nil {
+                    notes.append("No local Ollama model found. Install one (e.g. `ollama pull qwen3`) and set translator.model.")
+                }
+            } else {
+                notes.append("\(L10nConfig.fileName) already exists; left unchanged (use --force to overwrite).")
+            }
 
-        let refreshed = try Project.discover(root: root)
-        let baselined = try TranslationEngine(project: refreshed).accept(keys: nil, locales: nil)
+            let ignore = project.root.appendingPathComponent(".l10n-agent/.gitignore")
+            if !FileManager.default.fileExists(atPath: ignore.path) {
+                try AtomicFile.write("lock\n", to: ignore)
+            }
+            return try TranslationEngine(project: try Project.discover(root: root)).acceptLocked(keys: nil, locales: nil)
+        }
         notes.append("Add a Run Script build phase to see findings in Xcode: l10n-agent lint --format xcode --path \"$SRCROOT\" || true")
-        return InitResult(configPath: refreshed.relativePath(configURL), createdConfig: created, baselined: baselined, notes: notes)
+        return InitResult(configPath: project.relativePath(configURL), createdConfig: created, baselined: baselined, notes: notes)
     }
 
     static func configTemplate(sourceLanguage: String, locales: [String], catalog: String?, model: String?) -> String {

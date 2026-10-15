@@ -47,6 +47,10 @@ Out of scope:
 - Format parity compares argument index and type; reordering via positional specifiers is allowed; plural cases may omit arguments.
 - Fix plans are untrusted input: apply re-scans files, matches items to fresh sites, and takes only key, comment, specifier and status from the plan. The code style and target catalog are recomputed from the project. It refuses when a file changed, verifies the rewritten file still parses, and changes catalogs only for applied edits.
 - Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`, non-literal `table:`/`comment:`) are skipped.
+- With `codeStyle: auto`, symbol rewrites are decided per file: only files of an `.xcodeproj` that enables symbol generation in every configuration get symbols; package targets and mixed projects get literals.
+- `apply` loads every piece of state that can fail (catalogs, fingerprints) before writing any source file; `init` holds one lock for all its writes.
+- `*` widths/precisions (`%*d`) count as integer arguments; strings with them are never reordered.
+- Only conditions that require `DEBUG` (`DEBUG`, `DEBUG && X`, `A || B` with both requiring it) are skipped by the scanner.
 - Plural categories come from the CLDR table in `PluralRules` or `pluralCategories` in the config; unknown languages are reported, never guessed.
 - Catalog lookups are scoped to the file's own target: L10N004 checks only those catalogs, and fixes for a named table use (or create) that table there instead of another target's catalog or `Localizable`.
 - Glossary terms (L10N108) are checked in every variation whose source uses the term.

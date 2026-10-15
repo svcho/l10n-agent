@@ -72,7 +72,7 @@ By default, fixes use **semantic keys** (`settings.notifications.title`) with a 
 | `label.text = "Hello \(name)"` | `label.text = String(localized: .profileHello(name))` | `label.text = String(localized: "profile.hello", defaultValue: "Hello \(name)", comment: "…")` |
 | `Settings.xcstrings` table | `.Settings.someKey` | adds `table: "Settings"` |
 
-`codeStyle: auto` (default) uses generated symbols when the project sets `STRING_CATALOG_GENERATE_SYMBOLS = YES` (the default for projects created with Xcode 26), and literals otherwise. Generated symbol names follow Xcode's rules exactly (checked against `xcstringstool generate-symbols`), and keys that would produce colliding or reserved symbols are rejected before Xcode fails the build.
+`codeStyle: auto` (default) decides per file. It uses generated symbols when the Xcode project that owns the file sets `STRING_CATALOG_GENERATE_SYMBOLS = YES` (the default for projects created with Xcode 26) and no configuration sets it to `NO`. It uses literals for everything else: other projects, mixed settings and Swift package targets. Generated symbol names follow Xcode's rules exactly (checked against `xcstringstool generate-symbols`), and keys that would produce colliding or reserved symbols are rejected before Xcode fails the build.
 
 When an English-text key such as `Text("Welcome back")` already has translations, `fix` copies them to the new semantic key, so no translation work is lost.
 

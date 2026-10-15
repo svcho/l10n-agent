@@ -64,7 +64,8 @@ public struct LLMKeyNamer {
 
         for index in plan.items.indices {
             let table = URL(fileURLWithPath: plan.items[index].catalog).deletingPathExtension().lastPathComponent
-            plan.items[index].replacement = Fixer.replacement(for: plan.items[index], usesSymbols: plan.codeStyle == CodeStyle.symbols.rawValue, table: table)
+            let file = project.root.appendingPathComponent(plan.items[index].file)
+            plan.items[index].replacement = Fixer.replacement(for: plan.items[index], usesSymbols: project.usesSymbols(for: file), table: table, moduleBundle: Fixer(project: project).isInSwiftPackage(file))
         }
         return plan
     }

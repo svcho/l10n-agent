@@ -30,6 +30,8 @@ public struct FormatToken: Equatable, Sendable {
     public let isPositional: Bool
     /// UTF-16 range of the token in the string.
     public let range: Range<String.Index>
+    /// Argument indices consumed by `*` widths/precisions (`%*d`, `%.*f`), always integers.
+    public var widthArguments: [Int] = []
 }
 
 public enum FormatSpecifier {
@@ -76,6 +78,16 @@ public enum FormatSpecifier {
                 continue
             }
 
+            // Each `*` consumes its own integer argument before the value.
+            var widthArguments: [Int] = []
+            for star in parsed.stars {
+                if let explicit = star {
+                    widthArguments.append(explicit)
+                } else {
+                    widthArguments.append(nextSequential)
+                    nextSequential += 1
+                }
+            }
             let index: Int
             if let position = parsed.position {
                 index = position
@@ -87,7 +99,8 @@ public enum FormatSpecifier {
                 kind: .argument(index: index, type: parsed.type),
                 text: String(string[percent..<parsed.end]),
                 isPositional: parsed.position != nil,
-                range: percent..<parsed.end
+                range: percent..<parsed.end,
+                widthArguments: widthArguments
             ))
             cursor = parsed.end
         }
@@ -101,6 +114,7 @@ public enum FormatSpecifier {
         for token in tokens(in: string) {
             if case .argument(let index, let type) = token.kind {
                 signature[index] = type
+                for width in token.widthArguments { signature[width] = .integer }
             }
         }
         return signature
@@ -146,7 +160,7 @@ public enum FormatSpecifier {
         return (name, string.index(after: close))
     }
 
-    private static func parseArgument(_ string: String, from start: String.Index) -> (position: Int?, type: FormatToken.ArgumentType, end: String.Index)? {
+    private static func parseArgument(_ string: String, from start: String.Index) -> (position: Int?, type: FormatToken.ArgumentType, end: String.Index, stars: [Int?])? {
         var index = start
         var position: Int?
 
@@ -166,16 +180,33 @@ public enum FormatSpecifier {
         while index < string.endIndex, "-+#0".contains(string[index]) {
             index = string.index(after: index)
         }
-        // Width
-        while index < string.endIndex, string[index] == "*" || (string[index].isASCII && string[index].isNumber) {
-            index = string.index(after: index)
-        }
-        // Precision
-        if index < string.endIndex, string[index] == "." {
-            index = string.index(after: index)
-            while index < string.endIndex, string[index] == "*" || (string[index].isASCII && string[index].isNumber) {
+        // Width and precision; `*` (optionally `*n$`) takes the value from an argument.
+        var stars: [Int?] = []
+        func consumeNumberOrStar() {
+            if index < string.endIndex, string[index] == "*" {
+                index = string.index(after: index)
+                var digits = ""
+                var probe = index
+                while probe < string.endIndex, string[probe].isASCII, string[probe].isNumber {
+                    digits.append(string[probe])
+                    probe = string.index(after: probe)
+                }
+                if !digits.isEmpty, probe < string.endIndex, string[probe] == "$" {
+                    stars.append(Int(digits))
+                    index = string.index(after: probe)
+                } else {
+                    stars.append(nil)
+                }
+                return
+            }
+            while index < string.endIndex, string[index].isASCII, string[index].isNumber {
                 index = string.index(after: index)
             }
+        }
+        consumeNumberOrStar()
+        if index < string.endIndex, string[index] == "." {
+            index = string.index(after: index)
+            consumeNumberOrStar()
         }
         // Length modifier
         for modifier in ["hh", "ll", "h", "l", "L", "q", "j", "z", "t"] {
@@ -198,6 +229,6 @@ public enum FormatSpecifier {
         case "p": type = .pointer
         default: return nil
         }
-        return (position, type, string.index(after: index))
+        return (position, type, string.index(after: index), stars)
     }
 }
