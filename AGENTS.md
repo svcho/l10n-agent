@@ -2,203 +2,96 @@
 
 ## Purpose
 
-`l10n-agent` is a local-first CLI for native iOS and Android localization workflows. It keeps a canonical JSON source of truth under `l10n/`, syncs native platform files, uses local Codex CLI for translation and semantic dedupe, and keeps deterministic repo state in git-friendly files.
+`l10n-agent` is a local-first Swift CLI (plus MCP server and Claude Code skill) that manages localization of Xcode projects. It lints Swift code and String Catalogs, rewrites code to semantic catalog keys, and translates with a local LLM. Apple platforms only.
 
-This file is intended to preserve the important maintainer context that would otherwise live only in a product doc.
+`README.md`, this file and `CHANGELOG.md` are the complete project context. `docs/audit-and-apple-redesign.md` records why the TypeScript version was replaced; `docs/plan-swift-rewrite.md` records the spikes behind key decisions.
 
 ## Product boundaries
 
-### In scope
+In scope:
 
-- local CLI-first workflows
-- canonical source file at `l10n/source.<locale>.json`
-- derived per-locale translation files at `l10n/translations.<locale>.json`
-- iOS `.xcstrings` and `Localizable.strings`
-- Android `strings.xml`
-- local Codex CLI as the only provider-backed path
-- deterministic repo checks and offline tests
+- `.xcstrings` String Catalogs as the only source of truth
+- Swift / SwiftUI / UIKit / AppKit code scanning with SwiftSyntax (no type checking)
+- code fixes using generated String Catalog symbols or `String(localized:defaultValue:comment:)`
+- translation through local models (Ollama native API, OpenAI-compatible servers)
+- CLI, MCP server (stdio) and skill front ends over one core library
 
-### Out of scope for v1
+Out of scope:
 
-- hosted services or remote state
-- OTA/runtime translation delivery
-- web UI or translator portal
-- enterprise collaboration features
-- non-mobile platforms
-- plural resource authoring and plural ICU syntax support
+- Android, web, cross-platform frameworks
+- `.strings` / `.stringsdict` as a source of truth (`migrate` converts them to String Catalogs once)
+- hosted services, remote state, OTA delivery
+- Objective-C scanning
+- authoring new plural variations in code (lint suggests them; translate fills existing ones)
 
-## Core workflow model
+## Layout
 
-The intended ownership model is:
+- `Sources/L10nCore/JSON/` order-preserving JSON parser and Xcode-identical writer
+- `Sources/L10nCore/Catalog/` catalog model, format specifiers, parity, symbol naming, fingerprints
+- `Sources/L10nCore/Project/` config (`.l10n-agent.yml`) and project discovery (pbxproj settings)
+- `Sources/L10nCore/Scanner/` SwiftSyntax scanner, API tables and the project-wide index (`ProjectIndex`)
+- `Sources/L10nCore/Lint/` rules, linter, reporters (text, xcode, json, sarif)
+- `Sources/L10nCore/Fix/` key suggestion, fix plans, applying edits, LLM key naming
+- `Sources/L10nCore/Translate/` chat-model clients, masking, plural rules, translation engine
+- `Sources/L10nCore/Commands/` status, doctor, init, add-keys, migrate
+- `Sources/L10nMCP/` MCP server
+- `Sources/l10n-agent/` CLI (swift-argument-parser)
+- `Tests/` Swift Testing suites; `Tests/L10nCoreTests/Fixtures/SampleApp` is the integration fixture
+- `skills/apple-l10n/SKILL.md` Claude Code skill
 
-1. Humans edit canonical source in `l10n/source.<locale>.json`.
-2. `sync` derives translations and native platform files from canonical state.
-3. App code references localization keys rather than human-readable copy literals.
-4. Humans may review and lock translations by setting `reviewed: true`.
+## Behavioral rules (keep these true)
 
-Native files are derived outputs. They should not become the long-term source of truth after adoption.
+- Catalog writes must be byte-identical to Xcode's output for the same content. Unknown fields round-trip. Keys are compared by exact bytes, never normalized (use `ByteKey` for key sets and maps).
+- Symbol names must match `xcstringstool generate-symbols`; non-`Localizable` tables are namespaced (`.Settings.key`).
+- Translations in state `translated` are never overwritten or removed by any command, including single plural categories. Tool output is written as `needs_review`. Broken `needs_review` translations may be retranslated.
+- Format parity compares argument index and type; reordering via positional specifiers is allowed; plural cases may omit arguments. Substitution `argNum`/`formatSpecifier` must match the source and are part of the source fingerprint.
+- A language may vary a plain source string by plural/device on its own (Xcode "Vary by Plural"); complete variations count as translated and are never machine-translated.
+- Fix plans are untrusted input: apply re-scans files, matches items to fresh sites, and takes only key, comment, specifier and status from the plan. The code style and target catalog are recomputed from the project. It refuses when a file changed, verifies the rewritten file still parses, and changes catalogs only for applied edits.
+- Rewrites keep declared types: literals typed `LocalizedStringResource` become a resource expression; `LocalizedStringKey`-typed literals are skipped. Literal-style resources in packages use `bundle: .atURL(Bundle.module.bundleURL)`.
+- Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`, non-literal `table:`/`comment:`) are skipped.
+- With `codeStyle: auto`, symbol rewrites are decided per file: only files of an `.xcodeproj` that enables symbol generation in every app/extension configuration get symbols (unit and UI test bundles are ignored; the pbxproj is read as a property list); package targets, mixed projects and files whose owner is ambiguous (several projects in the same folder) get literals.
+- `apply` loads every piece of state that can fail before writing, computes all changes in memory, then commits catalogs and fingerprints before source files through a `FileTransaction` that restores every written file if any write fails. `translate` (catalogs + fingerprints per batch) and `l10n_add_keys` use the same transaction. `init` holds one lock for all its writes.
+- `*` widths/precisions (`%*d`) count as integer arguments; strings with them are never reordered. The space flag (`% d`) counts only when the conversion ends the word, so prose such as "100% discount" stays text.
+- L10N110 and fix-time symbol checks apply only where symbols are generated (per catalog / per rewritten file).
+- Plural translations are restored and validated against their own source form (`other` only for categories the source lacks).
+- The JSON parser accepts only RFC 8259 numbers; malformed or blank catalogs are reported (L10N100), never rewritten. Only nonexistent catalog paths start empty.
+- `init` validates all catalogs before writing anything and writes `catalog:` only when the project has a single candidate catalog.
+- A key/locale fingerprint is only re-stamped when no approved translation of it was left unreviewed.
+- Migrating translations into an existing key merges only the leaves it lacks; existing leaves always win.
+- Provided plural translations may fill categories next to approved ones; approved categories are ignored, never overwritten.
+- Only conditions that require `DEBUG` (`DEBUG`, `DEBUG && X`, `A || B` with both requiring it) are skipped by the scanner.
+- Plural categories come from the CLDR table in `PluralRules` or `pluralCategories` in the config; unknown languages are reported, never guessed.
+- Catalog lookups are scoped to the file's own target (`catalogRoutes`, package target, nearest ancestor catalog, else the owning `.xcodeproj` folder ranked by shared prefix and folder names). When several catalogs remain, fixes are skipped and `l10n_add_keys` requires `catalog`; the tool never guesses. Discovered symlinks must resolve inside the project. L10N004 checks only those catalogs, and fixes for a named table use (or create) that table there instead of another target's catalog or `Localizable`.
+- Glossary terms (L10N108) are checked in every variation whose source uses the term.
+- Fixes whose placeholder types are guessed are `needsReview` and are not applied by default.
+- Translation is local-only. Non-localhost URLs and Ollama `:cloud` models need `translator.allowRemote: true` plus `L10N_AGENT_ALLOW_REMOTE=1` in the user's environment.
+- Mutating commands hold the `flock` project lock (`.l10n-agent/lock`); the kernel releases it on exit.
+- `.l10n-agent/fingerprints.json` is the only extra state. Comment edits do not make translations stale. A file that does not match the schema stops the command instead of being treated as empty.
+- MCP tools resolve every path inside the project root (symlinks resolved); provided translations are limited to target locales.
+- Tests stay offline: no live model calls. Tests that need Xcode tools are skipped when `xcrun` is unavailable.
+- Scanning uses a `ProjectIndex` of every project file: parameters declared `LocalizedStringKey`/`LocalizedStringResource` make literal arguments lookups (a `LocalizedStringKey` parameter is never rewritten) only when every same-named declaration with that label agrees, and properties or functions used only as arguments of logging calls (free logging functions, or `debug/info/warning/error/…` on a receiver named like a logger) are not UI text.
+- A literal that is an existing semantic key (`a.b`, no spaces) of its file's catalogs is never turned into a `defaultValue`; English text that Xcode extracted as a key elsewhere is still plain text. At a known UI API it is reported as a raw key (unfixable); at heuristic (label or name) matches it is silent.
+- Sites found only by an argument label or a variable name are `heuristic`; their fixes are `needsReview`. Generated files (a comment before the first declaration with "generated" plus "do not edit", or `@generated`/"autogenerated"; `///` doc comments do not count) and test files are skipped. `DispatchQueue(label:)` and other queue, lock and log names, and dotted identifiers, are not UI text.
+- Interpolations use the type the file declares for them (parameters, typed locals, typed properties) for their specifier; the nearest binding wins, and an untyped one (`{ x in }`, `for x in`, `if let x`, `case let .a(x)`) makes the type unknown. Only unknown types are guessed. When a plan edits a specifier, generated "%x is name." notes follow it.
+- `fix --plan` previews are recomputed through the same validation as `apply` (`Fixer.prepare`), never printed from the stored plan.
+- Letterless literals that Xcode extracts (L10N006) are fixed by a "Don't translate" catalog entry; the code is not changed. Lint and status ignore values without text once format specifiers are removed.
+- Unused manual keys (L10N106) count literals, generated-symbol identifiers, interpolated literal prefixes and `keys.dynamicPrefixes` across all project Swift files; `InfoPlist` and `AppShortcuts` tables are not checked.
+- `migrate` runs under the project lock, never overwrites an existing catalog value, cross-checks every `.strings` parse against `PropertyListSerialization`, verifies every value in memory before writing, and writes catalogs and fingerprints in one transaction. It stamps fingerprints only for translations it wrote (against their legacy source), never deletes a legacy file whose values conflicted, and ignores symlinks that leave the project. Interface Builder strings are skipped.
+- `lint` fails on warnings by default (`--fail-on warning`). Glossary translations may list several accepted forms; `translator.instructions` only shapes the prompt.
 
-## Supported commands
+## Lint rule IDs
 
-- `init`
-- `sync`
-- `lint`
-- `status`
-- `check`
-- `doctor`
-- `dedupe`
-- `rename`
-- `rollback`
-- `import`
-- `repair`
-
-## Important behavioral rules
-
-- canonical source lives under `l10n/source.<locale>.json`
-- translation files live under `l10n/translations.<locale>.json`
-- all persisted JSON is versioned and stable-sorted
-- removed locales must be archived under `l10n/.archive/`
-- history is append-only in `l10n/.history.jsonl`
-- rollback depends on snapshots in `l10n/.snapshots/`
-- tests must stay offline; no live Codex calls in CI
-- provider-backed behavior must stay isolated to `src/providers/`
-- reviewed translations must never be silently overwritten
-- placeholder parity must be preserved across translations (order-sensitive for digit-named positional placeholders; count-sensitive for all names)
-- semantic dedupe may propose merges but must never auto-merge keys
-- cache hits require matching `config_hash` (provider-relevant config subset) in addition to `source_hash` and `locale`; changing glossary or provider settings busts affected entries
-- `rollback`, `rename`, `import`, `repair`, and `lint --fix` must all acquire the sync lock before any file I/O and release it in a `finally` block
-- `rollback` must additionally validate the target snapshot before creating a recovery snapshot
-- `repair` must write each successfully-parsed file independently; a parse error on one file must not block rewrites on other valid files
-- Codex subprocess invocations must carry an `AbortController`-backed timeout (default 5 minutes); preflight calls must time out at 15 seconds
-
-## Provider model
-
-`l10n-agent` uses local Codex CLI only.
-
-Provider-backed commands:
-
-- `sync`
-- `dedupe`
-- `doctor` request estimation when Codex is available
-
-Preflight must continue to validate:
-
-- Codex installed
-- Codex logged in
-- Codex version meets configured minimum
-
-Failure codes currently matter as product behavior:
-
-- `L10N_E0050` not installed
-- `L10N_E0051` not logged in
-- `L10N_E0052` version too old
-- `L10N_E0053` rate limit or quota
-- `L10N_E0054` subprocess failure
-- `L10N_E0055` malformed provider protocol/output
-- `L10N_E0056` subprocess timed out (default 5-minute wall-clock limit per invocation)
-- `L10N_E0079` sync lock already held (also used for rollback, rename, import, repair, lint-fix lock contention)
-- `L10N_E0086` cache schema upgrade — v1/v2 cache dropped, translations will re-run
-- `L10N_E0087` glossary term not preserved in a translation
-- `L10N_E0088` repair could not parse or merge a managed JSON file
-- `L10N_E0090` reviewed translation skipped by sync (reviewed-stale warning)
-
-## Data model summary
-
-Important managed files:
-
-- `l10n/config.yaml`
-- `l10n/source.<locale>.json`
-- `l10n/translations.<locale>.json`
-- `l10n/.cache.json`
-- `l10n/.history.jsonl`
-- `l10n/.state.json`
-- `l10n/.archive/`
-- `l10n/.snapshots/`
-
-Important translation entry semantics:
-
-- `reviewed`
-  Human-reviewed; `sync` must not silently replace it.
-- `stale`
-  Source changed after translation was produced or reviewed.
-- `source_hash`
-  Current source-copy fingerprint used for drift detection.
-
-Cache entry semantics (`l10n/.cache.json` schema v3):
-
-- `source_hash` — fingerprint of the source key text and placeholders
-- `locale` — target locale code
-- `config_hash` — fingerprint of the provider-relevant config subset (glossary, model, provider type, minimum version); changing any of these fields invalidates cached entries for affected keys
-- `model_version` — model identifier returned by the provider at translation time
-- `text` — cached translation text
-
-## Important paths
-
-- `src/cli/`
-  command wiring and human/json output
-- `src/config/`
-  config schema and loader
-- `src/core/store/`
-  canonical JSON schemas, hashing, load, and write helpers
-- `src/core/sync.ts`
-  canonical reconciliation, cache/state/history, locale add/remove handling
-- `src/core/dedupe.ts`
-  exact and semantic duplicate reporting
-- `src/core/glossary.ts`
-  glossary enforcement over persisted translations
-- `src/core/repair.ts`
-  canonical JSON normalization and merge-artifact repair
-- `src/core/rename.ts`
-  transactional key renaming across managed state
-- `src/core/rollback.ts`
-  history-based restoration; acquires sync lock and validates target snapshot before any file I/O
-- `src/providers/codex-local.ts`
-  Codex preflight, structured prompts, and replay transport
-- `src/adapters/ios/`
-  `.xcstrings` and `Localizable.strings` adapters
-- `src/adapters/android/`
-  `strings.xml` adapter
-- `fixtures/projects/`
-  integration fixtures
-- `fixtures/provider/`
-  recorded provider sessions for offline tests
-
-## Onboarding scenarios the docs must keep covering
-
-The public docs need to stay complete enough that `PRD.md` can be removed without losing onboarding knowledge.
-
-They must continue to explain:
-
-- how to adopt the tool in a repo that already has iOS and/or Android localization files
-- how to adopt the tool in a repo that has not localized anything yet
-- how to create the first native localization containers for greenfield adoption
-- how to replace hard-coded strings in app code with localizable key lookups
-- how canonical dotted keys map to Android snake_case resource names by default
-
-## Migration expectations
-
-For partially localized or unlocalized apps, the intended migration order is:
-
-1. create or detect native localization files
-2. run `init`
-3. establish canonical keys in `source.<locale>.json`
-4. run `sync`
-5. replace code literals with localization lookups
-6. use `rename` and `dedupe` to improve key quality rather than editing many files manually
-
-## Release readiness and docs policy
-
-- `README.md`, `AGENTS.md`, and `CHANGELOG.md` should be sufficient project context if `PRD.md` is deleted
-- public docs must describe the actual implemented command surface, not milestone placeholders
-- if behavior changes, update docs and integration tests in the same change
-- keep repo publish-safe: never commit credentials, `.env*`, private keys, auth dumps, or sensitive recorded model output
-- pre-commit runs `npm run secrets:scan`; keep it passing
+L10N001-L10N006 (code), L10N100-L10N112 (catalogs). IDs are stable; add new rules with new IDs and document them in README.
 
 ## Fast start
 
 ```bash
-npm install
-npm run build
-npm test
-npm run repo:public-check
+swift build
+swift test
+scripts/check.sh
 ```
+
+## Release and docs policy
+
+- Update README, this file and CHANGELOG in the same change as behavior changes.
+- Keep the repo publish-safe: never commit credentials, `.env*`, private keys or recorded model output. `scripts/secret-scan.sh` (staged blobs plus working copies) runs in `scripts/check.sh` and the pre-commit hook.

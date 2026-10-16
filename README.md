@@ -1,642 +1,292 @@
 # l10n-agent
 
-> Warning: this is an early-stage build. It may rewrite localization files in ways you do not expect. Use it at your own risk, review diffs carefully, and test on a throwaway branch first.
+> Early-stage tool. It edits Swift files and String Catalogs. Commit first, review the diffs, and keep the catalog under version control.
 
-`l10n-agent` is a local-first CLI for iOS and Android localization workflows. It keeps a canonical JSON source of truth under `l10n/`, syncs native platform files, translates missing strings through a local Codex CLI session, preserves reviewed edits, enforces key style rules, and helps clean up duplicate or conflicted localization state without introducing a hosted backend.
+`l10n-agent` is a local-first localization assistant for Xcode projects. It:
 
-Release history for the implemented CLI is tracked in `CHANGELOG.md`. `PRD.md` remains in the repo as historical planning context, but `README.md` and `AGENTS.md` are the authoritative docs for the current implementation.
+- **lints** Swift code for text that reaches the UI without being localized, and String Catalogs (`.xcstrings`) for missing, stale and broken translations
+- **fixes** code automatically: adds semantic keys with translator comments to the catalog and rewrites the code to use them (Xcode 26+ generated symbols such as `Text(.settingsTitle)`, or `String(localized:defaultValue:comment:)`)
+- **translates** missing strings with a **local LLM** (Ollama, LM Studio or any OpenAI-compatible server on your machine), including plural forms, and protects format specifiers
+- plugs into **Xcode** (inline warnings from a build phase), **CI** (SARIF), and **coding agents** (an MCP server and a Claude Code skill)
 
-## What this project is for
-
-`l10n-agent` is aimed at solo developers and small teams shipping native iOS and Android apps who want:
-
-- one canonical source of truth in git
-- deterministic CI checks
-- native platform files committed in the repo
-- local AI-assisted translation without standing up a backend
-- safe handling of reviewed translations, stale copy, duplicate keys, and merge conflicts
-
-The intended workflow is:
-
-1. You own source copy in `l10n/source.<locale>.json`.
-2. `l10n-agent` owns derived translations and native localization files.
-3. Your app code references localization keys, not final human text literals.
-
-## Scope and boundaries
-
-The current build supports:
-
-- native iOS `.xcstrings` and `Localizable.strings`
-- native Android `strings.xml`
-- local Codex CLI as the only provider-backed path
-- deterministic local files committed to git
-
-The current build does not include:
-
-- hosted services or remote state
-- OTA/runtime translation delivery
-- human-translator web workflows
-- non-mobile targets such as web, React Native, or Flutter
-- plural resource authoring support
-
-Plural ICU syntax is not supported. If source text contains plural syntax, the tool will fail loudly rather than guess.
-
-## Key ideas
-
-- The canonical source file is authoritative: `l10n/source.<source_locale>.json`
-- Each target locale has its own file: `l10n/translations.<locale>.json`
-- Native platform files are derived outputs that stay committed so apps build normally
-- Persisted JSON is stable-sorted for predictable diffs and lower merge-conflict churn
-- Reviewed translations are never silently overwritten
-- Removed locales are archived under `l10n/.archive/`, not hard-deleted
-
-## Command surface
-
-- `init`
-  Scaffold `l10n/`, detect native localization files, preflight Codex, and optionally import existing strings.
-- `sync [--dry-run] [--strict] [--locale <locale>] [--continue]`
-  Reconcile source, translations, cache, history, and native platform files. Reviewed stale entries are preserved and warned on. Removed locales are archived.
-- `lint [--glossary] [--fix]`
-  Validate key naming rules and, with `--glossary`, verify persisted translations preserve configured glossary terms. `--fix` uses the local Codex CLI to propose safe destination keys, applies the rename across managed localization files, and rewrites exact key-string references in supported repo code/config text files.
-- `status [--locale <locale>]`
-  Show whether a sync is currently running or was interrupted, how many translations are complete, and how much work remains per locale.
-- `check [--fast]`
-  Deterministic CI gate for lint failures, missing translations, stale entries, orphaned keys, and platform drift.
-- `doctor`
-  Report locale coverage, reviewed vs. machine-translated counts, platform status, cache/history state, and next-sync request estimates when Codex is available.
-- `dedupe`
-  Report exact duplicate source copy deterministically and semantic duplicate candidates through the provider. It never auto-merges keys.
-- `rename <from> <to>`
-  Rename a canonical key across source, translations, history, and native platform files in one pass.
-- `rollback --to <history-id>`
-  Restore managed localization files to the snapshot taken before a history entry.
-- `import --from <xcstrings|android>` (`xcstrings` covers iOS `.xcstrings` and `Localizable.strings`)
-  Import source and reviewed translations from native platform files.
-- `repair [--dry-run]`
-  Re-canonicalize managed JSON files and auto-merge simple disjoint-key git conflict markers.
+The String Catalog is the single source of truth. There is no separate JSON store to keep in sync, and git provides history and rollback.
 
 ## Requirements
 
-- Node.js 20+
-- Git
-- Codex CLI installed and authenticated with `codex login` for `sync`, `dedupe`, and `lint --fix`
-
-Deterministic commands such as `lint`, `check`, `repair`, `rollback`, and `import` do not require live provider calls. The exception is `lint --fix`, which uses the local Codex CLI to propose destination keys before applying the rename.
+- macOS 14+ with Xcode 15+ (Xcode 26+ for generated symbols)
+- Swift 6 toolchain (ships with Xcode)
+- For `translate`: [Ollama](https://ollama.com) or another local OpenAI-compatible server with a model installed (for example `ollama pull qwen3`)
 
 ## Install
 
-Build the package in this repo:
+```bash
+git clone https://github.com/svcho/l10n-agent.git
+cd l10n-agent
+scripts/install.sh            # builds a release binary into ~/.local/bin
+```
+
+Or run from the checkout: `swift run l10n-agent --help`.
+
+## Quick start
+
+From your app repository (the folder with the `.xcodeproj` or `Package.swift`):
 
 ```bash
-npm install
-npm run build
-npm link
+l10n-agent migrate --apply    # only for legacy .lproj/*.strings: converts them to String Catalogs
+l10n-agent init               # writes .l10n-agent.yml, detects locales, the key scheme and a local model
+l10n-agent doctor             # checks Xcode, catalogs, locales and the translator
+l10n-agent lint               # what is not localized or not translated
+l10n-agent fix                # preview code + catalog fixes
+l10n-agent fix --apply        # apply them
+l10n-agent translate          # fill translations with your local model
+l10n-agent status             # coverage per locale
 ```
 
-Then in any other folder, such as your iOS or Android app repo:
-
-```bash
-l10n-agent --help
-l10n-agent init
-```
-
-If you want a fixed global install instead of a live link:
-
-```bash
-npm install -g /path/to/l10n-agent
-```
-
-`npm link` is usually better while you are developing this repo, because rebuilding here immediately updates what the global `l10n-agent` command uses without reinstalling.
-
-For local development in this repo:
-
-```bash
-npm test
-npm run dev -- --help
-```
-
-## Repository layout
-
-```text
-l10n/
-  config.yaml
-  source.en.json
-  translations.de.json
-  translations.es.json
-  .cache.json
-  .history.jsonl
-  .state.json
-  .archive/
-  .snapshots/
-```
-
-Important file meanings:
-
-- `l10n/config.yaml`
-  Declares source locale, target locales, key style rules, platform paths, provider settings, and glossary.
-- `l10n/source.<locale>.json`
-  Canonical source copy written by humans.
-- `l10n/translations.<locale>.json`
-  Per-locale translations written by the tool and optionally reviewed by humans.
-- `l10n/.cache.json`
-  Translation cache keyed by source hash, locale, provider config hash, and model version. Changing the glossary or provider settings automatically invalidates affected entries.
-- `l10n/.history.jsonl`
-  Append-only operational history.
-- `l10n/.state.json`
-  Partial-run resume marker for interrupted provider-backed syncs.
-- `l10n/.archive/`
-  Archived translation files for removed locales.
-- `l10n/.snapshots/`
-  Rollback snapshots of managed localization files.
-
-## Data model
-
-Example canonical source file:
-
-```json
-{
-  "version": 1,
-  "keys": {
-    "onboarding.welcome.title": {
-      "text": "Welcome home, {name}",
-      "description": "First-launch hero. Friendly tone.",
-      "placeholders": {
-        "name": {
-          "type": "string",
-          "example": "Jacob"
-        }
-      }
-    }
-  }
-}
-```
-
-Example translation file:
-
-```json
-{
-  "version": 1,
-  "locale": "de",
-  "entries": {
-    "onboarding.welcome.title": {
-      "text": "Willkommen zu Hause, {name}",
-      "reviewed": false,
-      "stale": false,
-      "source_hash": "sha256:7f...",
-      "provider": "codex-local",
-      "model_version": "gpt-5-2026-03-01",
-      "translated_at": "2026-04-18T12:00:00Z"
-    }
-  }
-}
-```
-
-Meaningful entry fields:
-
-- `reviewed: true`
-  Human-reviewed translation. `sync` will not silently overwrite it.
-- `stale: true`
-  Source text changed after the translation was last considered current.
-- `source_hash`
-  Tracks whether a translation still matches the current source text.
+Then open the catalog in Xcode, review the machine translations (state *Needs Review*) and mark them reviewed. Approved translations are never overwritten by the tool.
 
-## Provider and safety behavior
+## How it works
 
-`l10n-agent` shells out to `codex` and uses the local session established by `codex login`. No API key or hosted service is required.
+### Source of truth and review states
 
-Provider-backed commands preflight:
+The tool reads and writes `.xcstrings` files losslessly: unknown fields are kept and the output is byte-identical to what Xcode writes (verified against `xcstringstool` in the test suite). It uses Xcode's own translation states:
 
-- Codex installed
-- authenticated session available
-- installed Codex version meets the configured minimum
+| State | Meaning | Tool behavior |
+|---|---|---|
+| *(missing)* / `new` | not translated | `translate` fills it |
+| `needs_review` | machine-translated, or written by an agent | `translate` may replace it when the source changes |
+| `translated` | approved by a human in Xcode | never overwritten; source changes are reported (L10N103) |
 
-If preflight fails, the tool returns actionable errors:
+### Detecting source changes
 
-- `L10N_E0050`
-  Codex CLI is not installed.
-- `L10N_E0051`
-  Codex is installed but not logged in.
-- `L10N_E0052`
-  Codex version is below the configured minimum.
+Xcode does not flag translations of manual keys when their source text changes. `l10n-agent` keeps one small file, `.l10n-agent/fingerprints.json`, that records which source text each translation was made from. Commit it with your catalogs. Editing a key's comment does not make translations stale; editing its text does.
 
-`sync` runs in the foreground, but it now writes in-flight progress to `.state.json` so another terminal can inspect status while the command is still active.
+After reviewing a translation whose source changed, run `l10n-agent accept --key <key>` (or edit the translation in Xcode and accept).
 
-If a provider-backed `sync` fails mid-run:
+### Keys and code style
 
-- completed translation work is already persisted
-- `.state.json` records the partial state
-- history records partial completion
-- rerunning `sync` resumes from the remaining delta
-- `sync --continue` can be used as a script-safe guard that refuses to start from scratch
+By default, fixes use **semantic keys** (`settings.notifications.title`) with a `comment` for translators:
 
-## Step-by-step setup
+| Context | Generated symbols (Xcode 26+) | Literal style |
+|---|---|---|
+| `Text("Welcome")` | `Text(.homeWelcome)` | `Text(String(localized: "home.welcome", defaultValue: "Welcome", comment: "…"))` |
+| `Button("Save") {}` | `Button(String(localized: .settingsSaveButton)) {}` | `Button(String(localized: "settings.save.button", defaultValue: "Save", comment: "…")) {}` |
+| `label.text = "Hello \(name)"` | `label.text = String(localized: .profileHello(name))` | `label.text = String(localized: "profile.hello", defaultValue: "Hello \(name)", comment: "…")` |
+| `Settings.xcstrings` table | `.Settings.someKey` | adds `table: "Settings"` |
 
-### A. Existing iOS or Android localization setup
+`codeStyle: auto` (default) decides per file. It uses generated symbols when the Xcode project that owns the file sets `STRING_CATALOG_GENERATE_SYMBOLS = YES` (the default for projects created with Xcode 26) and no app or extension configuration sets it to `NO`; unit and UI test bundles are ignored. It uses literals for everything else: other projects, mixed settings and Swift package targets. `doctor` names the configurations that turn symbols off. Generated symbol names follow Xcode's rules exactly (checked against `xcstringstool generate-symbols`), and keys that would produce colliding or reserved symbols are rejected before Xcode fails the build.
 
-Use this when the app already has committed iOS string files (`.xcstrings` or `Localizable.strings`), Android `strings.xml`, or both.
+When an English-text key such as `Text("Welcome back")` already has translations, `fix` copies them to the new semantic key, so no translation work is lost.
 
-#### 1. Build and link the CLI
+Interpolations become placeholders. When the file declares the interpolated value's type (a function or closure parameter, a typed local, or a typed property of the enclosing type), the specifier follows it: `UInt32` → `%u`, `Int` → `%lld`, `Double` → `%lf`, `String` → `%@`. Otherwise the type is guessed from the name, and the fix is marked **needsReview**. Fixes for text that was found only by an argument label or a variable name (`present(title: "…")`, `var errorMessage: String { "…" }`) are **needsReview** too, since the API may not show it. These are applied only with `--include-review`, or after you or an agent confirm them in the plan.
 
-```bash
-npm install
-npm run build
-npm link
-```
+New keys follow the project's scheme: they reuse the dotted prefix shared by the keys the same type (or file) already uses, else the first segment almost all keys of the catalog share (`mac.appSettings.space.label` in a catalog of `mac.*` keys), else a scope derived from the type name. Generic words (`Cancel`, `OK`) go under `common.`. Comments name the type and member (`Label in MacAppSettings.keyLabel(for:).`).
 
-#### 2. Install and log in to Codex
+`fix` never rewrites code it cannot rewrite faithfully. These sites are reported as *skipped* with a reason:
 
-```bash
-codex login
-```
+- the text is part of a larger expression inside `Text(...)`/`String(localized:)` (for example `Text(flag ? "On" : "Off")`)
+- the call has arguments the rewrite would drop (`bundle:`, `locale:`, `defaultValue:`, or a `table:`/`comment:` that is not a plain string literal)
+- multiline or raw literals
+- `String(format:)` and literals that already contain printf specifiers
 
-`init` will still scaffold files if Codex is missing, but `sync` and `dedupe` need a working Codex install.
+A developer's `comment:` argument becomes the catalog comment. In literal style, files inside a Swift package get `bundle: .module`.
 
-#### 3. Run `init`
+Literals without letters that Xcode still extracts as keys (`Text("\(count)")` → `%lld`, `Text("%@ · %@")`, `Text("6")`) are reported as L10N006. Their fix leaves the code alone and adds the key to the catalog as *Don't translate*.
 
-From the app repo root:
+A literal that is already a key of the file's catalog is never rewritten into a `defaultValue`. Passed to a function the project declares with a `LocalizedStringKey` or `LocalizedStringResource` parameter, it is a lookup like `Text("settings.title")` (checked by L10N004). At a known UI API such as `label.text =` it is reported as a raw key.
 
-```bash
-l10n-agent --help
-l10n-agent init
-```
+Saved plans are treated as untrusted input. `apply` re-scans every file and takes code and interpolations from the source. Only `key`, `comment`, `placeholders[].specifier` and `status` come from the plan. Each key goes into the catalog computed for its file, and the code style must match the project's current setting. `fix --plan plan.json` without `--apply` shows exactly what apply would write from the edited plan, including notes such as "%u is keyCode." updated to the edited specifier.
 
-What happens:
+## Commands
 
-- platform localization files are auto-detected where possible (`.xcstrings`, `*.lproj/Localizable.strings`, and Android `strings.xml`)
-- `l10n/config.yaml` is created
-- `l10n/source.<locale>.json` is created
-- existing platform strings are imported into canonical source and target translation files
-- Codex preflight status is printed
+| Command | Purpose |
+|---|---|
+| `lint [--format text\|xcode\|json\|sarif] [--rules …] [--files …] [--fail-on error\|warning\|info\|off]` | Report findings. Exit code 1 when a finding reaches `--fail-on` (default `warning`, so unlocalized text and missing or stale translations fail; info never does). |
+| `fix [--apply] [--include-review] [--llm-keys] [--plan-out plan.json] [--plan plan.json] [--ids …] [--files …]` | Preview or apply code + catalog fixes. `--llm-keys` asks the local model for better key names and comments. Plans can be saved, edited and applied later; apply refuses if a file changed in between. |
+| `translate [--locale …] [--key …] [--catalog …] [--model …] [--batch-size N] [--dry-run]` | Translate missing and stale strings with the local model. A dry run also says when the real run would be refused (for example a cloud model without the opt-in). |
+| `set-translation --key K --locale L (--value V \| --form one=… --form other=…) [--catalog C]`, or `--file t.json` | Write translations you made yourself. Same validation as MCP `l10n_set_translations`; written as `needs_review`, approved entries are never overwritten. |
+| `status [--fail-under N] [--approved-only]` | Coverage per catalog and locale. With `--fail-under 100`, exit code 1 when any catalog/locale is below 100% (approved + needs review, or approved only). |
+| `accept [--key …] [--locale …]` | Mark translations as matching the current source text. |
+| `doctor` | Environment and configuration checks. |
+| `init [--model …] [--force] [--allow-remote]` | Create `.l10n-agent.yml` and record fingerprints for existing translations. Infers the key style and depth from existing manual keys. `--allow-remote` writes `allowRemote: true` for a remote endpoint or `:cloud` model. |
+| `migrate [--apply] [--remove-legacy]` | Convert legacy `.lproj/*.strings` and `*.stringsdict` files into String Catalogs (see below). |
+| `rules` | List lint rules. |
+| `mcp` | Run the MCP server over stdio. |
 
-If auto-detection is wrong or incomplete, pass paths explicitly:
+All commands accept `--path <project root>` (default: current directory). `--format json` is available for `lint`, `fix`, `translate`, `set-translation`, `migrate`, `status` and `doctor`.
 
-```bash
-l10n-agent init --ios-path ios/MyApp/Localizable.xcstrings --android-path android/app/src/main/res/values/strings.xml
+## Lint rules
 
-# or with legacy iOS strings files
-l10n-agent init --ios-path MyApp/en.lproj/Localizable.strings
-```
+| ID | Name | Default | Finds |
+|---|---|---|---|
+| L10N001 | unlocalized-string | warning | UI text that is never localized: UIKit/AppKit properties and initializers (`label.text`, `UIAlertController(title:)`, `setTitle(_:for:)`), `NSError` `userInfo` messages (`NSLocalizedDescriptionKey`, …), user-facing variables (`let errorTitle = "…"`, `var title: String { "…" }`), custom APIs from config. Also a catalog key shown as is (`label.text = "settings.title"`). |
+| L10N002 | text-as-key | warning | Localized text that uses its English copy as key (`Text("Welcome")`, `Button("Save")`, `String(localized: "Sign out")`). Off when `semanticKeys: false`. |
+| L10N003 | concatenated-string | warning | `"Hello " + name` and `String(format:)` with UI text |
+| L10N004 | missing-key | error | `String(localized: "a.key")` / `Text("a.key")` with no such key in the catalog |
+| L10N005 | plural-candidate | info | `"\(count) items"`: needs a plural variation |
+| L10N006 | non-text-literal | info | A literal without letters that Xcode extracts as a key (`Text("\(count)")`, `Text("%@ · %@")`); `fix` marks it *Don't translate* |
+| L10N100 | catalog-parse | error | Catalog is not valid JSON |
+| L10N101 | missing-translation | warning | Key not translated for a target locale (including missing plural categories) |
+| L10N102 | needs-review | info | Translation waiting for review |
+| L10N103 | stale-translation | warning | Source text changed since the translation was made |
+| L10N104 | format-mismatch | error | Translation's format specifiers differ from the source by argument index or type (reordering with `%2$@` is fine) |
+| L10N105 | missing-comment | info | Key without a translator comment |
+| L10N106 | unused-key | info | Xcode marked the key stale, or no Swift file of the project references a manual key: not as a literal, a generated symbol, an interpolated prefix (`"settings.\(name)"`) or a `keys.dynamicPrefixes` entry. `InfoPlist` and `AppShortcuts` tables are not checked. |
+| L10N107 | key-style | warning | Manual key violates the configured key style |
+| L10N108 | glossary | warning | Translation does not use the required glossary term (or one of its listed forms) |
+| L10N109 | untranslated-copy | info | Translation identical to the source |
+| L10N110 | symbol-collision | error | Keys generate the same or a reserved Swift symbol (Xcode build error) |
+| L10N111 | source-language | warning | Catalog `sourceLanguage` differs from the project |
+| L10N112 | catalog-plural-candidate | info | A catalog value counts something (`"%d accounts"`, `"%lld item(s)"`) but has no plural variation |
 
-#### 4. Review the generated config
+Detection uses SwiftSyntax and an allowlist of user-facing APIs, so logging (`print`, `Logger`), asset names (`Image("logo")`), URLs, `UserDefaults` keys, queue and lock names (`DispatchQueue(label:)`) and dotted identifiers (`"com.example.queue"`) stay quiet. Before scanning a file, the tool indexes the whole project: functions with `LocalizedStringKey`/`LocalizedStringResource` parameters localize their literal arguments, and a property or function whose every use is a logging call (`logger.warning(issue.warningMessage)`) is not UI text. Code in `#if DEBUG`, `#Preview`, `PreviewProvider`, test files and generated files (a header saying "GENERATED … do not edit", `@generated` or "autogenerated") is skipped. `Text(verbatim:)` is treated as an intentional opt-out.
 
-Check:
-
-- `source_locale`
-- `target_locales`
-- `platforms.ios.path`
-- `platforms.android.path`
-- `keys.case`
-- `keys.max_depth`
-- `keys.scopes`
-- `provider.model` if you want to pin Codex to a specific model for provider-backed commands
-- `provider.glossary`
-
-Optional provider model pin:
-
-```yaml
-provider:
-  type: codex-local
-  codex_min_version: 0.30.0
-  model: gpt-5.1
-  glossary: {}
-```
-
-When `provider.model` is set, `sync`, `dedupe`, and `lint --fix` pass that model to the local Codex CLI. If you omit it, Codex uses its default model selection.
-
-#### 5. Inspect current health
-
-```bash
-l10n-agent doctor
-l10n-agent check
-```
-
-Use `doctor` to understand existing coverage and `check` to find drift or missing entries.
-
-#### 6. Preview the first reconciliation
-
-```bash
-l10n-agent sync --dry-run
-```
-
-This shows:
-
-- missing translations
-- stale translations
-- removed entries
-- cache hits (skipped provider calls)
-- estimated provider requests
-- reviewed-stale skips
-
-#### 7. Apply the first sync
-
-```bash
-l10n-agent sync
-```
-
-This will:
-
-- fill in missing target-locale entries
-- rewrite native platform files from canonical JSON
-- preserve reviewed translations
-- persist cache and history
-
-#### 8. Add a new locale and translate it
-
-Add the locale to `l10n/config.yaml`:
-
-```yaml
-target_locales:
-  - de
-  - es
-  - fr
-```
-
-Preview the work:
-
-```bash
-l10n-agent sync --dry-run
-```
-
-Run translation and write the derived files:
-
-```bash
-l10n-agent sync
-```
-
-This creates `l10n/translations.fr.json` if it does not already exist, translates all existing source keys for `fr`, updates iOS localization files, and updates Android string resources.
-
-Verify the result:
-
-```bash
-l10n-agent doctor
-l10n-agent check
-```
-
-If you want to translate only one locale during a run:
-
-```bash
-l10n-agent sync --locale fr
-```
-
-#### 9. Add a new key and translate it
-
-Add the key to `l10n/source.en.json`:
-
-```json
-"settings.notifications.title": {
-  "text": "Notifications",
-  "description": "Settings row title.",
-  "placeholders": {}
-}
-```
-
-Then run:
-
-```bash
-l10n-agent sync --dry-run
-l10n-agent sync
-```
-
-#### 10. Start normal maintenance
-
-For copy changes:
-
-1. Edit `l10n/source.<locale>.json`
-2. Run `l10n-agent sync --dry-run`
-3. Run `l10n-agent sync`
-4. Run `l10n-agent check`
-
-### B. Project with no localization setup yet
-
-Use this when the app still contains hard-coded UI strings and no real native localization structure.
-
-The goal is to:
-
-1. create native localization containers
-2. establish canonical keys
-3. replace hard-coded app strings with key-based lookups
-4. let `l10n-agent` manage the localized content from then on
-
-#### 1. Choose native localization container paths
-
-You need at least one managed platform path so `init` has a target. You can either create the files first or pass the paths explicitly and let `init --no-import-existing` create empty containers.
-
-For iOS:
-
-- use a `.xcstrings` catalog such as `ios/MyApp/Localizable.xcstrings`, or
-- use `Localizable.strings` at `MyApp/en.lproj/Localizable.strings`
-
-For Android:
-
-- use `android/app/src/main/res/values/strings.xml`
-  If you create it yourself, it can start nearly empty:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-</resources>
-```
-
-If the project supports only one platform, that is enough. If it supports both, pass both paths.
-
-#### 2. Initialize `l10n-agent`
-
-```bash
-l10n-agent init \
-  --source-locale en \
-  --target-locale de \
-  --target-locale es \
-  --ios-path ios/MyApp/Localizable.xcstrings \
-  --android-path android/app/src/main/res/values/strings.xml \
-  --no-import-existing
-```
-
-Use `--no-import-existing` when there is nothing useful to import yet.
-
-This creates:
-
-- `l10n/config.yaml`
-- `l10n/source.en.json`
-- `l10n/translations.de.json`
-- `l10n/translations.es.json`
-
-#### 3. Define your first keys in canonical source
-
-Example:
-
-```json
-{
-  "version": 1,
-  "keys": {
-    "onboarding.welcome.title": {
-      "text": "Welcome",
-      "description": "Onboarding screen title.",
-      "placeholders": {}
-    },
-    "settings.privacy.title": {
-      "text": "Privacy",
-      "description": "Settings row title.",
-      "placeholders": {}
-    }
-  }
-}
-```
-
-#### 4. Run the first sync
-
-```bash
-l10n-agent sync
-```
-
-This generates:
-
-- target-locale translation JSON files
-- iOS localization entries
-- Android localization resources
-
-#### 5. Replace hard-coded app strings with localization lookups
-
-This is the key migration step. After a key exists in canonical source and has been synced, update the app code to reference the key instead of a human text literal.
-
-Typical iOS pattern:
+### Suppressing findings
 
 ```swift
-Text(String(localized: "onboarding.welcome.title"))
+label.text = "™"                       // l10n-agent:ignore
+// l10n-agent:ignore L10N001
+debugLabel.text = "Internal build"
+// l10n-agent:disable-file L10N002      (anywhere in the file)
 ```
 
-or with Foundation APIs:
+Rule severities can be changed or turned off in `.l10n-agent.yml` under `rules:`.
 
-```swift
-NSLocalizedString("onboarding.welcome.title", comment: "")
+## Translating with a local model
+
+```yaml
+translator:
+  provider: ollama            # or: openai (LM Studio, llama.cpp server, vLLM)
+  baseURL: http://localhost:11434
+  model: qwen3                # any installed local model
+  batchSize: 20
+  maxRetries: 2
+  allowRemote: false
+  instructions:               # style guide for the model, by locale ("*" for all); not checked by lint
+    de: "Use informal du. Say Konto/Konten, never Account."
 ```
 
-Typical Android pattern with the default `snake_case` transform:
+- Strings are sent in batches with their key and comment as context, plus your glossary and `instructions`.
+- Format specifiers are replaced by tokens (`⟦1⟧`, `⟦@files⟧`) before sending and restored afterwards. If the model reorders arguments, positional specifiers (`%2$lld … %1$@`) are written. Answers that drop, add or retype a placeholder are rejected and retried with feedback.
+- Plural keys get exactly the CLDR categories of the target language (`one/few/many/other` for Polish, `other` for Japanese, `one/two/few/many/other` for Maltese). A language missing from the built-in table is never guessed: its plural keys are reported until you list its categories under `pluralCategories`. `%#@name@` substitutions keep their `argNum` and `formatSpecifier`.
+- Each request numbers its items 1…n, and retries go one item at a time. Answers that look shifted between items (different sources, identical translations) are retried individually.
+- Machine translations (`needs_review`) whose placeholders are broken are retranslated. Approved translations are never touched, not even single plural categories. They are listed under *approved skipped* when their source changed or their structure differs (for example plain text where the source is now plural).
+- Progress is written after each batch, so an interrupted run just continues where it stopped the next time.
+- **Local only by default.** Non-localhost endpoints and Ollama `:cloud` models are refused. Remote use needs both `allowRemote: true` in the config **and** `L10N_AGENT_ALLOW_REMOTE=1` in your environment, so a cloned repository cannot send your strings elsewhere on its own. For OpenAI-compatible servers that need a key, set `L10N_AGENT_API_KEY`.
+- Small models work for checking the pipeline: the test runs used `translategemma` (4B) and `qwen3.8:27b`. A 4B model may fail to return plural forms. Those keys are reported as failed and left untouched, so you can rerun with a larger model or translate them in Xcode.
 
-Canonical key:
+## Xcode integration
 
-```text
-onboarding.welcome.title
+Add a **Run Script** build phase to the app target to see findings inline in Xcode:
+
+```bash
+if command -v l10n-agent >/dev/null; then
+  l10n-agent lint --format xcode --path "$SRCROOT" || true
+fi
 ```
 
-Android resource key after transform:
+With *User Script Sandboxing* enabled (`ENABLE_USER_SCRIPT_SANDBOXING = YES`, the default for new projects) the script cannot read your sources; disable it for this target or run the lint as a pre-commit hook or CI step instead. Remove `|| true` to fail the build on findings (`--fail-on error` to fail on errors only).
 
-```text
-onboarding_welcome_title
+As a gate (pre-commit hook or CI), run both: `lint` fails on unlocalized text and missing, stale or broken translations, and `status --fail-under 100` fails when a catalog is not fully translated:
+
+```bash
+l10n-agent lint && l10n-agent status --fail-under 100
 ```
 
-Lookup:
+For CI, upload SARIF to GitHub code scanning:
 
-```kotlin
-context.getString(R.string.onboarding_welcome_title)
+```bash
+l10n-agent lint --format sarif > l10n.sarif
 ```
 
-#### 6. Continue replacing hard-coded strings incrementally
+## Coding agents
 
-For each screen or feature:
+### MCP server
 
-1. add canonical keys to `source.en.json`
-2. run `sync`
-3. replace code literals with localization lookups
-4. remove obsolete hard-coded strings from code
+```bash
+claude mcp add --scope project l10n-agent -- l10n-agent mcp
+```
 
-This lets you migrate a previously unlocalized app gradually rather than all at once.
+or in `.mcp.json`:
 
-### C. Converting an app that already has localization files but still uses raw user-facing text in code
+```json
+{ "mcpServers": { "l10n-agent": { "command": "l10n-agent", "args": ["mcp"] } } }
+```
 
-This is common in partial migrations.
+Tools: `l10n_lint`, `l10n_status`, `l10n_plan_fixes`, `l10n_apply_fixes`, `l10n_translate`, `l10n_set_translations`, `l10n_add_keys` (also `shouldTranslate: false` for *Don't translate* keys), `l10n_accept`, `l10n_migrate_strings`.
 
-Recommended order:
+An agent can lint, plan fixes, rename keys or improve comments in the plan, and apply it. It can then run the local translator or supply its own translations. Its translations are validated for placeholder parity, accepted only for target locales, and written as `needs_review`. All paths are confined to the project root, including through symlinks.
 
-1. Run `init` and import existing platform strings.
-2. Normalize keys in canonical source with `lint --fix` for batch-safe cleanup or `rename` when you want to control the exact destination key.
-3. Run `dedupe` to identify exact or semantic duplicate strings before wiring more code to them.
-4. Replace hard-coded code literals with lookups to the imported canonical keys.
-5. Keep copy edits in `l10n/source.<locale>.json`, not directly in app code or native localization files.
+### Claude Code skill
 
-## Working with keys
+Copy `skills/apple-l10n` to `~/.claude/skills/` (or `.claude/skills/` in your app repo). The skill tells Claude when and how to run the lint → fix → translate loop and how to write new UI code with localized keys from the start.
 
-Recommended approach:
+## Configuration
 
-- use semantic, stable keys such as `onboarding.welcome.title`
-- avoid keys that mirror current English wording
-- keep the same key across platforms
-- use `lint --fix` for safe batch cleanup and `rename` when you want an explicit destination key
+`.l10n-agent.yml` (all keys optional; unknown keys are an error; `Package.swift` manifests are never scanned):
 
-Key style is enforced by config:
+```yaml
+sourceLanguage: en
+locales: [de, ja, pl]               # default: the Xcode project's knownRegions
+catalog: App/Localizable.xcstrings  # where new keys go (default: nearest Localizable.xcstrings)
+catalogRoutes:                      # only for layouts the tool cannot infer (e.g. Sources/X + Resources/X)
+  - { files: "Sources/Shared/**", catalog: "Resources/Shared/Localizable.xcstrings" }
+codeStyle: auto                     # auto | symbols | literal
+semanticKeys: true
+keys:
+  style: dotted.camel               # dotted.camel | dotted.lower | dotted.snake; only the first segment must start with a letter
+  minDepth: 2
+  maxDepth: 4
+  scopes: []                        # allowed first segments
+  forbiddenPrefixes: ["tmp.", "debug.", "test."]
+  dynamicPrefixes: ["onboarding.step"]   # keys code builds at runtime; never reported unused
+include: []                         # globs; default everything
+exclude: ["**/Tests/**"]
+rules: { L10N105: off }
+glossary:
+  "Acme Cloud": { de: "Acme Cloud", ja: "Acme Cloud" }
+  account: { de: [Konto, Konten] }  # several accepted forms
+pluralCategories: { xx: [one, few, other] }   # only for languages missing from the built-in CLDR table
+userFacing:
+  functions: [{ name: PrimaryButton, labels: ["_"] }]
+  properties: [headlineCopy]
+translator: { provider: ollama, model: qwen3, instructions: { de: "Use informal du." } }
+```
 
-- `case`
-- `max_depth`
-- `scopes`
-- `forbidden_prefixes`
+## Adoption guides
 
-Android usually uses `snake_case` as a platform transform while canonical keys stay dotted.
+**App with a String Catalog already.** Run `init`, then `lint`. Existing translations are adopted as they are (fingerprints are recorded so future source edits are detected). Use `fix` to move English-text keys to semantic keys; existing translations move with them.
 
-## Typical day-to-day workflow
+**App with legacy `Localizable.strings`.** Run `l10n-agent migrate` to preview, then `l10n-agent migrate --apply --remove-legacy`. Every `<locale>.lproj/<Table>.strings` group becomes `<Table>.xcstrings` next to the `.lproj` folders:
 
-1. Add or edit canonical source keys in `l10n/source.<locale>.json`
-2. Run `l10n-agent lint`
-3. If key-style violations are straightforward, run `l10n-agent lint --fix` to apply Codex-suggested renames and rewrite exact key-string references in supported repo code/config text files
-4. Run `l10n-agent sync --dry-run`
-5. Run `l10n-agent sync`
-6. Review generated diffs
-7. Run `l10n-agent check`
+- values and the comment directly above each entry are kept, and other languages become `translated`
+- `.stringsdict` plural rules become plural variations, or substitutions with the right `argNum`
+- semantic keys become manual keys (Xcode never marks them stale), and fingerprints are recorded
+- each file's parse is cross-checked against Foundation's own reader, and every value is verified in the catalog before anything is written
+- an existing catalog keeps its own values; conflicts are listed
+- storyboard and XIB strings are left to Xcode
 
-When changing locale configuration:
+Projects with synchronized folders pick up the new catalogs automatically; otherwise `migrate` tells you which project references to replace. Then follow the steps above. Xcode's own *Migrate to String Catalog* works too.
 
-- add a locale to `target_locales` and run `sync` to generate it
-- remove a locale from `target_locales` and run `sync` to archive it and strip native outputs
+**App without localization.** Add languages under *Project > Info > Localizations*. Run `l10n-agent fix --apply`: it creates `Localizable.xcstrings` next to your sources if none exists (make sure the file is a member of your app target), adds keys and rewrites the code. Then run `translate`.
 
-When handling translation quality:
+**Writing new UI code.** Add keys first (`l10n_add_keys` for agents, or in Xcode's catalog editor) and reference them through generated symbols: `Text(.onboardingWelcomeTitle)`, `String(localized: .settingsSaveButton)`. `lint` catches anything that slips through.
 
-- set `reviewed: true` after a human correction
-- use `lint --glossary` to verify glossary preservation
-- use `dedupe` before proliferating near-duplicate keys
+## Breaking changes in this release
 
-When handling repo conflicts:
+- **`lint` fails on warnings by default.** `--fail-on` now defaults to `warning` (it was `error`). Unlocalized text and missing or stale translations make `lint` exit 1, so a CI step or build phase that ran `l10n-agent lint` without `|| true` starts failing. Pass `--fail-on error` for the old behavior, or `--fail-on off` to only report.
+- Fixes for text found only by an argument label or a variable name are now `needsReview`, so `fix --apply` skips them unless you add `--include-review` or confirm them in the plan.
 
-- run `repair --dry-run`
-- if safe, run `repair`
-- use `rollback --to <history-id>` if a managed localization operation needs to be reverted
+## Upgrading from 0.3 (TypeScript, iOS + Android)
+
+Version 0.4 is a rewrite in Swift that targets Apple platforms only. The `l10n/` canonical JSON store, `sync`, Android `strings.xml` support, `rollback`, `repair`, `import` and Codex CLI translation are gone. If you used `.xcstrings`, your catalog already holds your translations; run `l10n-agent init` and delete the `l10n/` folder once you have checked the catalog. Translations marked `reviewed: true` in the old JSON files correspond to state `translated` in the catalog.
 
 ## Development
 
-To work on the CLI codebase:
-
 ```bash
-npm install
-npm run build
-npm test
-npm run repo:public-check
+swift build
+swift test                 # includes checks against xcstringstool and an iOS type-check when Xcode is installed
+scripts/check.sh           # build, test and secret scan
+git config core.hooksPath .githooks   # run the secret scan before each commit
 ```
 
-After `npm link`, use the installed binary directly:
-
-```bash
-l10n-agent check
-l10n-agent doctor
-l10n-agent dedupe
-l10n-agent repair --dry-run
-l10n-agent sync --dry-run
-```
-
-When working on the TypeScript source and you want to skip the build step, `npm run dev` runs the source directly via `tsx`:
-
-```bash
-npm run typecheck
-npm run dev -- check
-npm run dev -- sync --dry-run
-```
-
-## Testing and publish safety
-
-- Tests stay offline. Provider-backed flows use recorded Codex fixtures rather than live requests.
-- Persisted JSON is stable-sorted for predictable diffs and lower merge-conflict churn.
-- `npm run repo:public-check` runs the secret scan and inspects the publish payload with `npm pack --dry-run`.
-- The published package includes `dist/`, `README.md`, and `CHANGELOG.md`.
-
-Do not commit:
-
-- `.env*`
-- API keys or auth dumps
-- private keys or provisioning artifacts
-- recorded provider output that contains user-specific secrets
+Tests never call a live model; the translator is replaced by a scripted fake. Do not commit credentials, `.env*` files, private keys or recorded model output.
