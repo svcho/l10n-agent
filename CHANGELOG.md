@@ -27,6 +27,8 @@ Rewrite in Swift, Apple platforms only. The String Catalog (`.xcstrings`) is now
 
 ### From the first real-repo trial (pangi: iOS, watchOS, macOS, widgets, AutoFill; 692 keys)
 
+- **Breaking:** `lint --fail-on` defaults to `warning` (was `error`): missing or stale translations and unlocalized text now fail `lint`. Use `--fail-on error` for the old behavior. Label- or name-only fixes are `needsReview`.
+
 - **Fix correctness.** A key passed to a function the project declares with a `LocalizedStringKey`/`LocalizedStringResource` parameter is treated as a lookup and never rewritten into a `defaultValue` that would not compile. Existing keys shown as is at a known UI API are reported as raw keys.
 - **Fewer false positives.** L10N001 hits on pangi went from 161 to 3, all real.
   - Queue, lock and log names (`DispatchQueue(label:)`) and dotted identifiers are ignored.

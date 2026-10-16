@@ -271,6 +271,11 @@ Projects with synchronized folders pick up the new catalogs automatically; other
 
 **Writing new UI code.** Add keys first (`l10n_add_keys` for agents, or in Xcode's catalog editor) and reference them through generated symbols: `Text(.onboardingWelcomeTitle)`, `String(localized: .settingsSaveButton)`. `lint` catches anything that slips through.
 
+## Breaking changes in this release
+
+- **`lint` fails on warnings by default.** `--fail-on` now defaults to `warning` (it was `error`). Unlocalized text and missing or stale translations make `lint` exit 1, so a CI step or build phase that ran `l10n-agent lint` without `|| true` starts failing. Pass `--fail-on error` for the old behavior, or `--fail-on off` to only report.
+- Fixes for text found only by an argument label or a variable name are now `needsReview`, so `fix --apply` skips them unless you add `--include-review` or confirm them in the plan.
+
 ## Upgrading from 0.3 (TypeScript, iOS + Android)
 
 Version 0.4 is a rewrite in Swift that targets Apple platforms only. The `l10n/` canonical JSON store, `sync`, Android `strings.xml` support, `rollback`, `repair`, `import` and Codex CLI translation are gone. If you used `.xcstrings`, your catalog already holds your translations; run `l10n-agent init` and delete the `l10n/` folder once you have checked the catalog. Translations marked `reviewed: true` in the old JSON files correspond to state `translated` in the catalog.

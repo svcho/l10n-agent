@@ -55,11 +55,21 @@ public enum KeyStyle: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// Compiled once per style; `matches` runs for every key of every catalog.
+    private static let compiled: [KeyStyle: (first: NSRegularExpression, later: NSRegularExpression)] = Dictionary(
+        uniqueKeysWithValues: allCases.map { style in
+            (style, (try! NSRegularExpression(pattern: "^\(style.segmentPattern)$"), try! NSRegularExpression(pattern: "^\(style.laterSegmentPattern)$")))
+        }
+    )
+
     func matches(_ key: String) -> Bool {
+        let (first, later) = Self.compiled[self]!
+        func fits(_ regex: NSRegularExpression, _ segment: String) -> Bool {
+            regex.firstMatch(in: segment, range: NSRange(segment.startIndex..., in: segment)) != nil
+        }
         let segments = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        guard let first = segments.first, first.wholeMatch(of: try! Regex(segmentPattern)) != nil else { return false }
-        let later = try! Regex(laterSegmentPattern)
-        return segments.dropFirst().allSatisfy { $0.wholeMatch(of: later) != nil }
+        guard let head = segments.first, fits(first, head) else { return false }
+        return segments.dropFirst().allSatisfy { fits(later, $0) }
     }
 }
 

@@ -166,7 +166,11 @@ public enum MigrateCommand {
         for projectFile in project.xcode.projectFiles {
             guard let text = try? String(contentsOf: projectFile.appendingPathComponent("project.pbxproj"), encoding: .utf8) else { continue }
             for table in Set(result.tables.map { URL(fileURLWithPath: $0.catalog).deletingPathExtension().lastPathComponent }) {
-                if text.contains("\(table).strings") || text.contains("\(table).stringsdict") {
+                // A whole file name (after `/`, `"` or a space), so `Plist` does not match `InfoPlist.strings`.
+                let mentioned = ["/", "\"", " ", "\t", "="].contains { boundary in
+                    text.contains("\(boundary)\(table).strings") || text.contains("\(boundary)\(table).stringsdict")
+                }
+                if mentioned {
                     result.notes.append("\(project.relativePath(projectFile)) references \(table).strings: in Xcode, remove that file reference and add \(table).xcstrings to the same targets (synchronized folders pick it up automatically).")
                 }
             }
@@ -190,7 +194,13 @@ public enum MigrateCommand {
                     result.notes.append("kept \(project.relativePath(url)): some of its values differ from the existing catalog")
                     continue
                 }
-                try FileManager.default.removeItem(at: url)
+                // The catalogs are already written; a failed delete is reported, never fatal.
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    result.notes.append("could not remove \(project.relativePath(url)): \(error.localizedDescription)")
+                    continue
+                }
                 result.removed.append(project.relativePath(url))
                 let folder = url.deletingLastPathComponent()
                 if (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.filter({ $0 != ".DS_Store" }).isEmpty == true {

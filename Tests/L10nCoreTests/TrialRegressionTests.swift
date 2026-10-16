@@ -765,4 +765,31 @@ struct TrialRegressionTests {
         #expect(DoctorCommand.translatorDetail(config, model: "deepseek:cloud", remote: true).contains("runs remotely"))
         #expect(DoctorCommand.translatorDetail(config, model: "qwen3", remote: false).hasSuffix("local only"))
     }
+
+    @Test func migrationNotesProjectReferencesByWholeFileName() throws {
+        let pbxproj = """
+        objects = {
+            A1 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; };
+            A2 /* Localizable.strings */ = {isa = PBXVariantGroup; name = Localizable.strings; };
+        };
+        """
+        let root = try TestSupport.makeProject([
+            "App.xcodeproj/project.pbxproj": pbxproj,
+            "App/en.lproj/Localizable.strings": "\"a.title\" = \"A\";\n",
+            "App/en.lproj/Plist.strings": "\"b.title\" = \"B\";\n",
+        ])
+        let result = try MigrateCommand.run(project: try Project.discover(root: root), apply: false)
+        #expect(result.notes.filter { $0.contains("references") }.map { $0.contains("Localizable.strings") } == [true])
+    }
+
+    @Test func failedLegacyDeletesAreReportedNotThrown() throws {
+        let root = try TestSupport.makeProject(["App/en.lproj/Localizable.strings": "\"a.title\" = \"A\";\n"])
+        let folder = root.appendingPathComponent("App/en.lproj")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+        let result = try MigrateCommand.run(project: try Project.discover(root: root), apply: true, removeLegacy: true)
+        #expect(result.removed.isEmpty)
+        #expect(result.notes.contains { $0.hasPrefix("could not remove App/en.lproj/Localizable.strings") })
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("App/Localizable.xcstrings").path))
+    }
 }
