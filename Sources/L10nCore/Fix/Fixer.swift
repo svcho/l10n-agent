@@ -6,7 +6,7 @@ import SwiftSyntax
 public struct Fixer {
     public let project: Project
 
-    public static let fixableRules: Set<String> = [Rules.unlocalized.id, Rules.textAsKey.id, Rules.concatenation.id]
+    public static let fixableRules: Set<String> = [Rules.unlocalized.id, Rules.textAsKey.id, Rules.concatenation.id, Rules.nonTextLiteral.id]
 
     public init(project: Project) {
         self.project = project
@@ -23,7 +23,15 @@ public struct Fixer {
         for url in project.catalogURLs {
             catalogs[url] = try StringCatalog.load(url)
         }
+        let catalogIndex = Linter.CatalogKeyIndex(project.catalogURLs.compactMap { catalogs[$0] })
         let suggester = KeySuggester(policy: project.config.keys)
+        // Generated symbol → key, so symbol-style code also shows which keys a type uses.
+        var keysBySymbol: [String: String] = [:]
+        for url in project.catalogURLs {
+            for (key, entry) in catalogs[url]?.entries ?? [] where entry.isManual {
+                if let symbol = SymbolNaming.bareName(for: key), keysBySymbol[symbol] == nil { keysBySymbol[symbol] = key }
+            }
+        }
 
         var items: [FixItem] = []
         var plannedKeys: [String: [ByteKey: String]] = [:]   // catalog → key → sourceValue
@@ -35,7 +43,12 @@ public struct Fixer {
             let relative = project.relativePath(url)
             // Symbol naming constraints only matter where this file's rewrites use symbols.
             let fileUsesSymbols = project.usesSymbols(for: url)
-            for (site, diagnostic) in fixableFindings(source: source.text, relative: relative, linter: linter, options: options) {
+            let scan = fixableFindings(source: source.text, relative: relative, fileURL: url, linter: linter, options: options, catalogs: catalogIndex)
+            var siblings = Self.referencedKeys(in: scan.sites)
+            for (type, names) in ProjectIndex.implicitMembers(in: source.text) {
+                siblings[type, default: []] += names.compactMap { keysBySymbol[$0] }
+            }
+            for (site, diagnostic) in scan.findings {
                 if let findingIDs, !findingIDs.contains(diagnostic.id) { continue }
                 fileHashes[relative] = Hashing.sha256(source.text)
 
@@ -54,12 +67,25 @@ public struct Fixer {
                 let catalogPath = project.relativePath(catalogURL)
                 let catalog = catalogs[catalogURL] ?? StringCatalog.empty(url: catalogURL, sourceLanguage: project.sourceLanguage)
 
-                let placeholders = site.segments.compactMap { segment -> FixPlaceholder? in
-                    guard case .expression(let expression) = segment else { return nil }
-                    let guess = PlaceholderGuess.guess(expression)
-                    return FixPlaceholder(expression: expression, specifier: guess.specifier, confident: guess.confident)
+                if site.kind == .nonText, let key = site.key {
+                    // No code change: the extracted key becomes a "Don't translate" entry.
+                    items.append(FixItem(
+                        id: diagnostic.id, rule: diagnostic.rule, file: relative, line: site.line, column: site.column,
+                        status: .ready, reason: nil, original: site.originalCode, key: key, comment: "", sourceValue: key,
+                        placeholders: [], catalog: catalogPath, replacement: site.originalCode, context: site.context,
+                        api: site.api, role: site.role, enclosingType: site.enclosingType, range: site.replaceRange,
+                        segments: site.segments, reusesExistingKey: catalog.contains(key), migrateFrom: nil, doNotTranslate: true
+                    ))
+                    continue
                 }
+
+                let placeholders = Self.placeholders(for: site)
                 let sourceValue = Self.sourceValue(segments: site.segments, placeholders: placeholders)
+
+                // New keys follow the keys this type (or file) already uses, e.g. `mac.settings.hotkey`.
+                let prefix = suggester.projectPrefix(for: site, siblings: siblings, catalogKeys: catalog.entries.filter { $0.entry.isManual }.map(\.key))
+                let scope = prefix ?? suggester.effectiveScope(for: site)
+                let group = PlannedGroup(catalog: catalogPath, scope: scope, role: site.role, sourceValue: ByteKey(sourceValue))
 
                 // Reuse an existing manual key or a key planned earlier for the same text.
                 var key: String?
@@ -69,12 +95,11 @@ public struct Fixer {
                     !fileUsesSymbols || (SymbolNaming.symbol(for: key) != .reserved && (manualSymbols[SymbolNaming.bareName(for: key) ?? key]?.count ?? 0) <= 1)
                 }
                 // Existing keys are reused only within the same screen scope or from `common.`.
-                let scope = suggester.effectiveScope(for: site)
                 let scopeMatches: (String) -> Bool = { key in key.hasPrefix(scope + ".") || key.hasPrefix("common.") }
                 if let existing = catalog.entries.first(where: { $0.entry.isManual && scopeMatches($0.key) && $0.entry.localization(catalog.sourceLanguage)?.stringUnit?.value == sourceValue && symbolIsClean($0.key) }) {
                     key = existing.key
                     reuses = true
-                } else if let planned = plannedGroups[PlannedGroup(catalog: catalogPath, scope: suggester.effectiveScope(for: site), role: site.role, sourceValue: ByteKey(sourceValue))] {
+                } else if let planned = plannedGroups[group] {
                     key = planned
                 }
 
@@ -85,12 +110,12 @@ public struct Fixer {
 
                 let existingSymbols = Set(catalog.entries.filter { $0.entry.isManual }.compactMap { SymbolNaming.bareName(for: $0.key) })
                     .union((plannedKeys[catalogPath] ?? [:]).keys.compactMap { SymbolNaming.bareName(for: $0.string) })
-                let finalKey = key ?? suggester.suggest(for: site) { candidate in
+                let finalKey = key ?? suggester.suggest(for: site, prefix: prefix) { candidate in
                     catalog.contains(candidate) || plannedKeys[catalogPath]?[ByteKey(candidate)] != nil
                         || (fileUsesSymbols && existingSymbols.contains(SymbolNaming.bareName(for: candidate) ?? candidate))
                 }
                 plannedKeys[catalogPath, default: [:]][ByteKey(finalKey)] = sourceValue
-                plannedGroups[PlannedGroup(catalog: catalogPath, scope: suggester.effectiveScope(for: site), role: site.role, sourceValue: ByteKey(sourceValue))] = finalKey
+                plannedGroups[group] = finalKey
 
                 var comment = site.codeComment ?? suggester.comment(for: site, placeholders: placeholders)
                 if let migrateFrom, let existingComment = catalog.entry(migrateFrom)?.comment, !existingComment.isEmpty {
@@ -98,19 +123,25 @@ public struct Fixer {
                 }
 
                 var status = FixStatus.ready
-                var reason: String?
+                var reasons: [String] = []
                 if let unfixable = site.unfixableReason {
                     status = .skipped
-                    reason = unfixable
+                    reasons.append(unfixable)
                 } else if site.api == "LocalizedStringKey" {
                     status = .skipped
-                    reason = "LocalizedStringKey(...) cannot take a generated symbol; rewrite manually"
+                    reasons.append("LocalizedStringKey(...) cannot take a generated symbol; rewrite manually")
                 } else if site.context == .swiftUIKey, site.api.hasPrefix("AttributedString") {
                     status = .skipped
-                    reason = "AttributedString(localized:) needs a manual rewrite"
-                } else if placeholders.contains(where: { !$0.confident }) {
-                    status = .needsReview
-                    reason = "placeholder types are guessed from names; confirm the specifiers"
+                    reasons.append("AttributedString(localized:) needs a manual rewrite")
+                } else {
+                    if site.heuristic {
+                        status = .needsReview
+                        reasons.append("found only by the name \(site.api); confirm it is shown to users")
+                    }
+                    if placeholders.contains(where: { !$0.confident }) {
+                        status = .needsReview
+                        reasons.append("placeholder types are guessed from names; confirm the specifiers")
+                    }
                 }
 
                 var item = FixItem(
@@ -120,7 +151,7 @@ public struct Fixer {
                     line: site.line,
                     column: site.column,
                     status: status,
-                    reason: reason,
+                    reason: reasons.isEmpty ? nil : reasons.joined(separator: "; "),
                     original: site.originalCode,
                     key: finalKey,
                     comment: comment,
@@ -146,14 +177,45 @@ public struct Fixer {
         return FixPlan(version: 1, codeStyle: style, files: fileHashes, items: items)
     }
 
+    static func placeholders(for site: StringSite) -> [FixPlaceholder] {
+        var index = 0
+        return site.segments.compactMap { segment -> FixPlaceholder? in
+            guard case .expression(let expression) = segment else { return nil }
+            defer { index += 1 }
+            let guess = PlaceholderGuess.guess(expression, declaredType: index < site.typeHints.count ? site.typeHints[index] : nil)
+            return FixPlaceholder(expression: expression, specifier: guess.specifier, confident: guess.confident)
+        }
+    }
+
+    /// Keys the file already looks up, by enclosing type (`""` for top level).
+    static func referencedKeys(in sites: [StringSite]) -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for site in sites where site.kind == .localizedKey {
+            guard let key = site.key else { continue }
+            result[site.enclosingType ?? "", default: []].append(key)
+        }
+        return result
+    }
+
+    struct FileScan {
+        var findings: [(StringSite, Diagnostic)]
+        /// Every site in the file, fixable or not.
+        var sites: [StringSite]
+    }
+
     /// Sites with a fixable finding, honoring rule selection and inline suppressions.
-    func fixableFindings(source: String, relative: String, linter: Linter, options: LintOptions) -> [(StringSite, Diagnostic)] {
+    func fixableFindings(source: String, relative: String, fileURL: URL, linter: Linter, options: LintOptions, catalogs: Linter.CatalogKeyIndex) -> FileScan {
         let suppressions = Suppressions(source: source)
-        return SwiftScanner(userFacing: project.config.userFacing).scan(source: source, path: relative).compactMap { site in
-            linter.codeDiagnostics(for: site, keysByTable: [:], options: options)
-                .first { Self.fixableRules.contains($0.rule) && !suppressions.suppresses(rule: $0.rule, line: site.line) }
+        let sites = linter.scanner.scan(source: source, path: relative)
+        let keys = linter.fileKeys(for: fileURL, sites: sites, catalogs: catalogs)
+        let findings = sites.compactMap { site in
+            linter.codeDiagnostics(for: site, keys: keys, options: options)
+                // Unfixable sites stay in the plan as skipped items (with the reason); findings
+                // that are unfixable for another reason (a raw key shown as text) do not.
+                .first { Self.fixableRules.contains($0.rule) && ($0.fixable || !site.fixable) && !suppressions.suppresses(rule: $0.rule, line: site.line) }
                 .map { (site, $0) }
         }
+        return FileScan(findings: findings, sites: sites)
     }
 
     /// Files inside a Swift package need `bundle: .module` for literal-style lookups.
@@ -300,6 +362,11 @@ public struct Fixer {
                 lines.append("    \(item.reason ?? "")")
                 continue
             }
+            if item.doNotTranslate == true {
+                lines.append("  = \(item.original) (code unchanged)")
+                lines.append("    \(item.catalog): mark \"\(item.key)\" Don't translate")
+                continue
+            }
             lines.append("  - \(item.original)")
             lines.append("  + \(item.replacement)")
             let keyNote = item.reusesExistingKey ? "reuse" : "add"
@@ -316,6 +383,35 @@ public struct Fixer {
         return lines.joined(separator: "\n")
     }
 
+    /// Re-validates a saved (possibly edited) plan against the project without writing:
+    /// replacements, catalog values and comments are recomputed from the edited key,
+    /// comment and specifiers, exactly as `apply` would write them.
+    public func refresh(_ plan: FixPlan) throws -> FixPlan {
+        let prepared = try prepare(plan, includeReview: true)
+        // Edits that apply would drop (overlapping, or breaking the file's syntax) show as skipped.
+        let rewrite = Self.rewrite(prepared.accepted.map(\.item), sources: prepared.sources)
+        var refreshed = plan
+        refreshed.items = plan.items.enumerated().map { index, item in
+            if var updated = prepared.accepted.first(where: { $0.index == index })?.item {
+                if let reason = rewrite.skipped[updated.id] {
+                    updated.status = .skipped
+                    updated.reason = reason
+                    return updated
+                }
+                updated.status = item.status
+                // A guessed-placeholder note no longer applies once the item is marked ready.
+                if updated.status == .ready { updated.reason = nil }
+                return updated
+            }
+            guard item.status != .skipped else { return item }
+            var skipped = item
+            skipped.status = .skipped
+            skipped.reason = prepared.skipped[index] ?? "cannot be applied"
+            return skipped
+        }
+        return refreshed
+    }
+
     // MARK: Applying
 
     public func apply(_ plan: FixPlan, includeReview: Bool = false) throws -> ApplyResult {
@@ -324,25 +420,35 @@ public struct Fixer {
         }
     }
 
-    /// Applies a plan. The plan is treated as untrusted input (it may come from an agent or
+    /// The validated part of a plan, computed in memory.
+    struct Prepared {
+        var sources: [String: SourceText] = [:]
+        /// Accepted items with their index in the plan.
+        var accepted: [(index: Int, item: FixItem)] = []
+        /// Plan index → reason.
+        var skipped: [Int: String] = [:]
+        var catalogs: [String: StringCatalog] = [:]
+        var index = ProjectIndex()
+    }
+
+    /// Validates a plan. The plan is treated as untrusted input (it may come from an agent or
     /// a file someone edited): every item is matched against a fresh scan of its file, code
     /// and placeholder expressions come from that scan, and only `key`, `comment`,
     /// `placeholders[].specifier` and `status` are taken from the plan.
-    private func applyLocked(_ plan: FixPlan, includeReview: Bool) throws -> ApplyResult {
-        var result = ApplyResult(applied: [], skipped: [:], filesChanged: [], catalogsChanged: [], keysAdded: [], notes: [])
-        // The rewrite style follows the project, never the plan.
-        // The rewrite style, and with it the symbol constraints, is decided per file below.
+    func prepare(_ plan: FixPlan, includeReview: Bool) throws -> Prepared {
+        var prepared = Prepared()
+        // The rewrite style follows the project, never the plan; it is decided per file below.
         let projectStyle = project.codeStyleSummary(files: plan.files.keys.sorted().map { project.root.appendingPathComponent($0) })
         guard plan.codeStyle == projectStyle else {
             throw L10nError.planConflict("the plan uses \(plan.codeStyle) style but the project uses \(projectStyle); re-run fix to plan again")
         }
         let linter = Linter(project: project)
+        prepared.index = linter.index
         let options = LintOptions(rules: Self.fixableRules, code: true, catalogs: false)
         let projectFiles = Set(project.swiftFiles.map { project.relativePath($0) })
-        let projectCatalogs = Set(project.catalogURLs.map { project.relativePath($0) })
+        let catalogIndex = Linter.CatalogKeyIndex(try project.catalogURLs.map { try StringCatalog.load($0) })
 
         // Refuse to apply onto files that changed since planning; re-scan the rest.
-        var sources: [String: SourceText] = [:]
         var freshSites: [String: [StringSite]] = [:]
         for (file, hash) in plan.files.sorted(by: { $0.key < $1.key }) {
             let url = try PathUtil.resolveInside(file, root: project.root)
@@ -354,101 +460,104 @@ public struct Fixer {
             guard Hashing.sha256(source.text) == hash else {
                 throw L10nError.planConflict("\(file) changed since the plan was created; re-run fix to plan again")
             }
-            sources[relative] = source
-            freshSites[relative] = fixableFindings(source: source.text, relative: relative, linter: linter, options: options).map(\.0)
+            prepared.sources[relative] = source
+            freshSites[relative] = fixableFindings(source: source.text, relative: relative, fileURL: url, linter: linter, options: options, catalogs: catalogIndex).findings.map(\.0)
         }
 
-        var catalogs: [String: StringCatalog] = [:]
-        func catalog(_ path: String) throws -> StringCatalog {
-            if let loaded = catalogs[path] { return loaded }
-            let url = try PathUtil.resolveInside(path, root: project.root)
-            let loaded = FileManager.default.fileExists(atPath: url.path)
-                ? try StringCatalog.load(url, fallbackSourceLanguage: project.sourceLanguage)
-                : StringCatalog.empty(url: url, sourceLanguage: project.sourceLanguage)
-            catalogs[path] = loaded
-            return loaded
-        }
-
-        // 1. Validate items against the fresh scan and the catalogs.
-        var accepted: [(item: FixItem, catalogPath: String)] = []
         // (catalog, byte-exact key) → sourceValue
         var assignedValues: [CatalogKey: String] = [:]
-        for var item in plan.items {
+        for (index, var item) in plan.items.enumerated() {
+            func skip(_ reason: String) { prepared.skipped[index] = reason }
             let eligible = item.status == .ready || (includeReview && item.status == .needsReview)
             guard eligible else {
-                result.skipped[item.id] = item.reason ?? item.status.rawValue
+                skip(item.reason ?? item.status.rawValue)
                 continue
             }
             let file = (try? PathUtil.resolveInside(item.file, root: project.root)).map(project.relativePath) ?? item.file
             guard let site = freshSites[file]?.first(where: { $0.replaceRange == item.range && $0.originalCode == item.original }), site.fixable else {
-                result.skipped[item.id] = "no matching fixable string at \(item.file):\(item.line)"
+                skip("no matching fixable string at \(item.file):\(item.line)")
                 continue
             }
             let fileURL = project.root.appendingPathComponent(file)
             guard let expectedURL = catalogURL(for: site, fileURL: fileURL) else {
-                result.skipped[item.id] = "several catalogs could own \(item.file); add a catalogRoutes entry"
+                skip("several catalogs could own \(item.file); add a catalogRoutes entry")
                 continue
             }
             let expectedCatalog = project.relativePath(expectedURL)
             guard let catalogURL = try? PathUtil.resolveInside(item.catalog, root: project.root) else {
-                result.skipped[item.id] = "catalog \(item.catalog) is outside the project"
+                skip("catalog \(item.catalog) is outside the project")
                 continue
             }
             let catalogPath = project.relativePath(catalogURL)
             guard catalogPath == expectedCatalog else {
-                result.skipped[item.id] = "catalog \(item.catalog) is not the catalog for this file (expected \(expectedCatalog)); re-run fix to plan again"
+                skip("catalog \(item.catalog) is not the catalog for this file (expected \(expectedCatalog)); re-run fix to plan again")
                 continue
             }
+            item.file = file
+            item.catalog = catalogPath
+            item.context = site.context
+            item.segments = site.segments
+
+            if site.kind == .nonText {
+                // Only the extracted key is marked; the key always comes from the source.
+                guard let key = site.key else { skip("no key to mark"); continue }
+                item.key = key
+                item.sourceValue = key
+                item.placeholders = []
+                item.replacement = site.originalCode
+                item.doNotTranslate = true
+                _ = try loadCatalog(catalogPath, into: &prepared)
+                prepared.accepted.append((index, item))
+                continue
+            }
+            item.doNotTranslate = nil
 
             // Code and placeholder expressions always come from the source, never from the plan.
             let expressions = site.segments.compactMap { if case .expression(let expression) = $0 { return expression } else { return nil } }
             guard item.placeholders.count == expressions.count else {
-                result.skipped[item.id] = "placeholders do not match the interpolations in the source"
+                skip("placeholders do not match the interpolations in the source")
                 continue
             }
             var placeholderProblem: String?
-            for (index, placeholder) in item.placeholders.enumerated() {
+            for (position, placeholder) in item.placeholders.enumerated() {
                 let tokens = FormatSpecifier.tokens(in: placeholder.specifier)
                 guard tokens.count == 1, tokens[0].text == placeholder.specifier, case .argument = tokens[0].kind, !tokens[0].isPositional else {
                     placeholderProblem = "invalid specifier \(placeholder.specifier)"
                     break
                 }
-                item.placeholders[index].expression = expressions[index]
+                item.placeholders[position].expression = expressions[position]
             }
             if let placeholderProblem {
-                result.skipped[item.id] = placeholderProblem
+                skip(placeholderProblem)
                 continue
             }
-            item.segments = site.segments
-            item.context = site.context
-            item.file = file
-            item.catalog = catalogPath
+            item.comment = Self.updatingPlaceholderNotes(item.comment, placeholders: item.placeholders)
             item.sourceValue = Self.sourceValue(segments: item.segments, placeholders: item.placeholders)
             item.migrateFrom = site.kind == .localizedText ? site.key : nil
-            let target = try catalog(catalogPath)
+            let target = try loadCatalog(catalogPath, into: &prepared)
 
             let existing = target.entry(item.key)
             if existing == nil || existing?.isManual == false {
                 let violations = project.config.keys.violations(for: item.key)
                 if !violations.isEmpty {
-                    result.skipped[item.id] = "key \"\(item.key)\" \(violations.joined(separator: "; "))"
+                    skip("key \"\(item.key)\" \(violations.joined(separator: "; "))")
                     continue
                 }
             }
             let fileUsesSymbols = project.usesSymbols(for: fileURL)
             if fileUsesSymbols, SymbolNaming.symbol(for: item.key) == .reserved {
-                result.skipped[item.id] = "key \"\(item.key)\" cannot generate a Swift symbol"
+                skip("key \"\(item.key)\" cannot generate a Swift symbol")
                 continue
             }
             let assignmentKey = CatalogKey(catalog: catalogPath, key: ByteKey(item.key))
             if let assigned = assignedValues[assignmentKey] {
                 if assigned != item.sourceValue {
-                    result.skipped[item.id] = "key \"\(item.key)\" is planned twice with different text"
+                    skip("key \"\(item.key)\" is planned twice with different text")
                     continue
                 }
             } else if let existing {
                 guard existing.isManual, existing.localization(target.sourceLanguage)?.stringUnit?.value == item.sourceValue else {
-                    result.skipped[item.id] = "key \"\(item.key)\" already exists with different text"
+                    skip("key \"\(item.key)\" already exists with different text")
                     continue
                 }
             }
@@ -456,29 +565,47 @@ public struct Fixer {
                 let clashes = target.entries.contains { $0.entry.isManual && $0.key != item.key && SymbolNaming.bareName(for: $0.key) == symbol }
                     || assignedValues.keys.contains { $0.catalog == catalogPath && $0 != assignmentKey && SymbolNaming.bareName(for: $0.key.string) == symbol }
                 if clashes {
-                    result.skipped[item.id] = "key \"\(item.key)\" generates the same Swift symbol as another key"
+                    skip("key \"\(item.key)\" generates the same Swift symbol as another key")
                     continue
                 }
             }
             assignedValues[assignmentKey] = item.sourceValue
+            item.reusesExistingKey = existing != nil
             item.replacement = Self.replacement(for: item, usesSymbols: fileUsesSymbols, table: target.tableName, moduleBundle: isInSwiftPackage(fileURL))
-            accepted.append((item, catalogPath))
+            prepared.accepted.append((index, item))
         }
+        return prepared
+    }
 
-        // Load all remaining state that can fail before any source file is written, so a
-        // broken fingerprints file cannot leave code pointing at keys that were never added.
-        var fingerprints = try FingerprintStore.load(root: project.root)
+    private func loadCatalog(_ path: String, into prepared: inout Prepared) throws -> StringCatalog {
+        if let loaded = prepared.catalogs[path] { return loaded }
+        let url = try PathUtil.resolveInside(path, root: project.root)
+        let loaded = FileManager.default.fileExists(atPath: url.path)
+            ? try StringCatalog.load(url, fallbackSourceLanguage: project.sourceLanguage)
+            : StringCatalog.empty(url: url, sourceLanguage: project.sourceLanguage)
+        prepared.catalogs[path] = loaded
+        return loaded
+    }
 
-        // 2. Compute the rewritten code (in memory), last edit first so offsets stay valid.
-        var appliedItems: [FixItem] = []
-        var pendingSources: [String: SourceText] = [:]
-        for (file, entries) in Dictionary(grouping: accepted, by: { $0.item.file }).sorted(by: { $0.key < $1.key }) {
+    struct Rewrite {
+        var pending: [String: SourceText] = [:]
+        /// Items whose edit (or catalog-only change) will be applied.
+        var applied: [FixItem] = []
+        var skipped: [String: String] = [:]
+    }
+
+    /// Applies accepted edits to the sources in memory, last edit first so offsets stay
+    /// valid. Overlapping edits and files whose syntax would break are left out.
+    static func rewrite(_ accepted: [FixItem], sources: [String: SourceText]) -> Rewrite {
+        var result = Rewrite()
+        result.applied = accepted.filter { $0.doNotTranslate == true }
+        for (file, entries) in Dictionary(grouping: accepted.filter { $0.doNotTranslate != true }, by: { $0.file }).sorted(by: { $0.key < $1.key }) {
             guard let source = sources[file] else { continue }
             var bytes = Array(source.text.utf8)
-            let originalErrors = Self.syntaxErrorCount(source.text)
+            let originalErrors = syntaxErrorCount(source.text)
             var lowestStart = Int.max
             var fileItems: [FixItem] = []
-            for item in entries.map(\.item).sorted(by: { $0.range.start > $1.range.start }) {
+            for item in entries.sorted(by: { $0.range.start > $1.range.start }) {
                 guard item.range.start >= 0, item.range.start <= item.range.end, item.range.end <= bytes.count, item.range.end <= lowestStart else {
                     result.skipped[item.id] = "overlaps another fix"
                     continue
@@ -488,21 +615,57 @@ public struct Fixer {
                 fileItems.append(item)
             }
             let updated = String(decoding: bytes, as: UTF8.self)
-            guard Self.syntaxErrorCount(updated) <= originalErrors else {
+            guard syntaxErrorCount(updated) <= originalErrors else {
                 for item in fileItems { result.skipped[item.id] = "rewrite produced invalid Swift syntax" }
                 continue
             }
             guard !fileItems.isEmpty else { continue }
-            pendingSources[file] = SourceText(text: updated, hasBOM: source.hasBOM)
-            result.filesChanged.append(file)
-            appliedItems += fileItems
+            result.pending[file] = SourceText(text: updated, hasBOM: source.hasBOM)
+            result.applied += fileItems
         }
+        return result
+    }
+
+    /// Keeps generated notes such as "%@ is keyCode." in step with edited specifiers.
+    static func updatingPlaceholderNotes(_ comment: String, placeholders: [FixPlaceholder]) -> String {
+        var result = comment
+        for (index, placeholder) in placeholders.enumerated() {
+            let position = placeholders.count > 1 ? "%\(index + 1)\\$" : "%(?![0-9]+\\$)"
+            let pattern = position + "[A-Za-z@]+ is " + NSRegularExpression.escapedPattern(for: placeholder.expression) + "(?=[.;]|$)"
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let note = "\(placeholders.count > 1 ? "%\(index + 1)$" : "%")\(placeholder.specifier.dropFirst()) is \(placeholder.expression)"
+            result = regex.stringByReplacingMatches(in: result, range: NSRange(result.startIndex..., in: result), withTemplate: NSRegularExpression.escapedTemplate(for: note))
+        }
+        return result
+    }
+
+    private func applyLocked(_ plan: FixPlan, includeReview: Bool) throws -> ApplyResult {
+        var result = ApplyResult(applied: [], skipped: [:], filesChanged: [], catalogsChanged: [], keysAdded: [], notes: [])
+        let projectCatalogs = Set(project.catalogURLs.map { project.relativePath($0) })
+
+        // 1. Validate items against the fresh scan and the catalogs.
+        var prepared = try prepare(plan, includeReview: includeReview)
+        for (index, reason) in prepared.skipped { result.skipped[plan.items[index].id] = reason }
+        let sources = prepared.sources
+        var catalogs = prepared.catalogs
+        let accepted = prepared.accepted.map(\.item)
+
+        // Load all remaining state that can fail before any source file is written, so a
+        // broken fingerprints file cannot leave code pointing at keys that were never added.
+        var fingerprints = try FingerprintStore.load(root: project.root)
+
+        // 2. Compute the rewritten code (in memory), last edit first so offsets stay valid.
+        let rewrite = Self.rewrite(accepted, sources: sources)
+        result.skipped.merge(rewrite.skipped) { first, _ in first }
+        let pendingSources = rewrite.pending
+        let appliedItems = rewrite.applied
+        result.filesChanged = pendingSources.keys.sorted()
 
         // 3. Catalog changes, only for code edits that were applied.
         // English-text keys still used by code that was not rewritten stay live.
         var referencedTextKeys: Set<CatalogKey> = []   // table + byte-exact key
         if appliedItems.contains(where: { $0.migrateFrom != nil }) {
-            let scanner = SwiftScanner(userFacing: project.config.userFacing)
+            let scanner = Linter(project: project, index: prepared.index).scanner
             for url in project.swiftFiles {
                 let relative = project.relativePath(url)
                 guard let source = pendingSources[relative] ?? (try? SourceText.read(url)) else { continue }
@@ -513,8 +676,19 @@ public struct Fixer {
         }
         var added: Set<CatalogKey> = []
         for item in appliedItems.sorted(by: { ($0.file, $0.range.start) < ($1.file, $1.range.start) }) {
-            var target = try catalog(item.catalog)
+            if catalogs[item.catalog] == nil { catalogs[item.catalog] = try loadCatalog(item.catalog, into: &prepared) }
+            var target = catalogs[item.catalog]!
             let isNewKey = target.entry(item.key) == nil
+            if item.doNotTranslate == true {
+                var entry = target.entry(item.key) ?? CatalogEntry()
+                entry.shouldTranslate = false
+                target.setEntry(item.key, entry)
+                catalogs[item.catalog] = target
+                if isNewKey, added.insert(CatalogKey(catalog: item.catalog, key: ByteKey(item.key))).inserted {
+                    result.keysAdded.append(item.key)
+                }
+                continue
+            }
             var entry: CatalogEntry
             if let existing = target.entry(item.key) {
                 entry = existing

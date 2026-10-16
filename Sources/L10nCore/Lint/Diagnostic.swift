@@ -14,22 +14,24 @@ public enum Rules {
     public static let concatenation = RuleInfo(id: "L10N003", name: "concatenated-string", defaultSeverity: .warning, summary: "User-facing text is assembled by concatenation or String(format:), which translators cannot reorder.")
     public static let missingKey = RuleInfo(id: "L10N004", name: "missing-key", defaultSeverity: .error, summary: "Code looks up a key that no String Catalog defines.")
     public static let pluralCandidate = RuleInfo(id: "L10N005", name: "plural-candidate", defaultSeverity: .info, summary: "A count is interpolated into text; a plural variation is likely needed.")
+    public static let nonTextLiteral = RuleInfo(id: "L10N006", name: "non-text-literal", defaultSeverity: .info, summary: "A literal without letters (\"\\(count)\", \"%@ · %@\") is extracted as a catalog key; mark it Don't translate.")
     public static let missingTranslation = RuleInfo(id: "L10N101", name: "missing-translation", defaultSeverity: .warning, summary: "A key has no translation for a target locale.")
     public static let needsReview = RuleInfo(id: "L10N102", name: "needs-review", defaultSeverity: .info, summary: "A translation is waiting for human review.")
     public static let staleTranslation = RuleInfo(id: "L10N103", name: "stale-translation", defaultSeverity: .warning, summary: "The source text changed after the translation was made.")
     public static let formatMismatch = RuleInfo(id: "L10N104", name: "format-mismatch", defaultSeverity: .error, summary: "A translation's format specifiers do not match the source (by argument index and type).")
     public static let missingComment = RuleInfo(id: "L10N105", name: "missing-comment", defaultSeverity: .info, summary: "A key has no comment to give translators context.")
-    public static let unusedKey = RuleInfo(id: "L10N106", name: "unused-key", defaultSeverity: .info, summary: "Xcode marked the key stale: no code references it anymore.")
+    public static let unusedKey = RuleInfo(id: "L10N106", name: "unused-key", defaultSeverity: .info, summary: "A key is no longer used: Xcode marked it stale, or no Swift file references a manual key.")
     public static let keyStyle = RuleInfo(id: "L10N107", name: "key-style", defaultSeverity: .warning, summary: "A manual key does not follow the configured key style.")
     public static let glossary = RuleInfo(id: "L10N108", name: "glossary", defaultSeverity: .warning, summary: "A translation does not use the required glossary term.")
     public static let untranslatedCopy = RuleInfo(id: "L10N109", name: "untranslated-copy", defaultSeverity: .info, summary: "A translation is identical to the source text.")
     public static let symbolCollision = RuleInfo(id: "L10N110", name: "symbol-collision", defaultSeverity: .error, summary: "Keys generate the same Swift symbol, or a reserved one; Xcode fails the build.")
     public static let sourceLanguageMismatch = RuleInfo(id: "L10N111", name: "source-language", defaultSeverity: .warning, summary: "A catalog's sourceLanguage differs from the project's source language.")
+    public static let catalogPluralCandidate = RuleInfo(id: "L10N112", name: "catalog-plural-candidate", defaultSeverity: .info, summary: "A catalog value counts something (\"%lld item(s)\") but has no plural variation.")
 
     public static let all: [RuleInfo] = [
-        unlocalized, textAsKey, concatenation, missingKey, pluralCandidate,
+        unlocalized, textAsKey, concatenation, missingKey, pluralCandidate, nonTextLiteral,
         catalogParse, missingTranslation, needsReview, staleTranslation, formatMismatch, missingComment,
-        unusedKey, keyStyle, glossary, untranslatedCopy, symbolCollision, sourceLanguageMismatch,
+        unusedKey, keyStyle, glossary, untranslatedCopy, symbolCollision, sourceLanguageMismatch, catalogPluralCandidate,
     ]
 
     public static func info(_ id: String) -> RuleInfo? {
@@ -82,5 +84,10 @@ public struct LintReport: Codable, Equatable, Sendable {
 
     public func failed(threshold: Severity) -> Bool {
         diagnostics.contains { $0.severity >= threshold && $0.severity != .off }
+    }
+
+    /// Exit status of `lint --fail-on <threshold>`: 1 when a finding reaches it, never for `off`.
+    public func exitCode(failOn threshold: Severity) -> Int32 {
+        threshold != .off && failed(threshold: threshold) ? 1 : 0
     }
 }

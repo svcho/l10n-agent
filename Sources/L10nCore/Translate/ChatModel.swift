@@ -90,9 +90,14 @@ public struct OllamaChatModel: ChatModel {
         else { throw L10nError.translator("Ollama is not reachable at \(baseURL.absoluteString). Start it with `ollama serve`.") }
         return models.compactMap { model in
             guard let name = model["name"] as? String else { return nil }
-            let remote = model["remote_host"] != nil || name.hasSuffix(":cloud") || name.hasSuffix("-cloud")
+            let remote = model["remote_host"] != nil || isCloudName(name)
             return InstalledModel(name: name, isRemote: remote)
         }
+    }
+
+    /// Ollama names cloud models `name:cloud` or `name-cloud`.
+    public static func isCloudName(_ name: String) -> Bool {
+        name.hasSuffix(":cloud") || name.hasSuffix("-cloud")
     }
 
     public func complete(system: String, user: String) async throws -> String {
@@ -164,6 +169,15 @@ public struct OpenAICompatibleChatModel: ChatModel {
 }
 
 public enum ChatModelFactory {
+    /// Whether strings sent to this translator leave the machine: a non-localhost endpoint
+    /// or an Ollama cloud model.
+    public static func isRemote(_ config: TranslatorConfig, model: String) async -> Bool {
+        guard let baseURL = URL(string: config.baseURL), HTTP.isLocal(baseURL) else { return true }
+        if OllamaChatModel.isCloudName(model) { return true }
+        guard config.provider == .ollama, let installed = try? await OllamaChatModel.installedModels(baseURL: baseURL) else { return false }
+        return installed.first { $0.name == model }?.isRemote ?? false
+    }
+
     /// Builds the configured backend, refusing remote endpoints and cloud models unless allowed.
     public static func make(_ config: TranslatorConfig, modelOverride: String? = nil) async throws -> ChatModel {
         guard let baseURL = URL(string: config.baseURL), baseURL.scheme != nil else {

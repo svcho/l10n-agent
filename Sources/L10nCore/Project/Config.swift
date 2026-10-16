@@ -36,12 +36,30 @@ public enum KeyStyle: String, Codable, Sendable, CaseIterable {
     /// `settings.dark_mode.title`
     case dottedSnake = "dotted.snake"
 
+    /// Pattern of the first segment, which must start with a letter (it starts the
+    /// generated Swift symbol).
     var segmentPattern: String {
         switch self {
         case .dottedCamel: return "[a-z][a-zA-Z0-9]*"
         case .dottedLower: return "[a-z][a-z0-9]*"
         case .dottedSnake: return "[a-z][a-z0-9_]*"
         }
+    }
+
+    /// Later segments may also start with a digit (`settings.autoLock.15min`).
+    var laterSegmentPattern: String {
+        switch self {
+        case .dottedCamel: return "[a-z0-9][a-zA-Z0-9]*"
+        case .dottedLower: return "[a-z0-9][a-z0-9]*"
+        case .dottedSnake: return "[a-z0-9][a-z0-9_]*"
+        }
+    }
+
+    func matches(_ key: String) -> Bool {
+        let segments = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard let first = segments.first, first.wholeMatch(of: try! Regex(segmentPattern)) != nil else { return false }
+        let later = try! Regex(laterSegmentPattern)
+        return segments.dropFirst().allSatisfy { $0.wholeMatch(of: later) != nil }
     }
 }
 
@@ -51,13 +69,17 @@ public struct KeyPolicy: Codable, Sendable, Equatable {
     public var maxDepth: Int
     public var scopes: [String]
     public var forbiddenPrefixes: [String]
+    /// Prefixes of keys that code builds at runtime (`"onboarding.step\(n)"`); keys under
+    /// them are never reported as unused (L10N106).
+    public var dynamicPrefixes: [String]
 
-    public init(style: KeyStyle = .dottedCamel, minDepth: Int = 2, maxDepth: Int = 4, scopes: [String] = [], forbiddenPrefixes: [String] = ["tmp.", "debug.", "test."]) {
+    public init(style: KeyStyle = .dottedCamel, minDepth: Int = 2, maxDepth: Int = 4, scopes: [String] = [], forbiddenPrefixes: [String] = ["tmp.", "debug.", "test."], dynamicPrefixes: [String] = []) {
         self.style = style
         self.minDepth = minDepth
         self.maxDepth = maxDepth
         self.scopes = scopes
         self.forbiddenPrefixes = forbiddenPrefixes
+        self.dynamicPrefixes = dynamicPrefixes
     }
 
     public init(from decoder: Decoder) throws {
@@ -68,17 +90,15 @@ public struct KeyPolicy: Codable, Sendable, Equatable {
         maxDepth = try container.decodeIfPresent(Int.self, forKey: .maxDepth) ?? defaults.maxDepth
         scopes = try container.decodeIfPresent([String].self, forKey: .scopes) ?? defaults.scopes
         forbiddenPrefixes = try container.decodeIfPresent([String].self, forKey: .forbiddenPrefixes) ?? defaults.forbiddenPrefixes
+        dynamicPrefixes = try container.decodeIfPresent([String].self, forKey: .dynamicPrefixes) ?? defaults.dynamicPrefixes
     }
 
     /// Returns a list of human-readable violations; empty when the key is valid.
     public func violations(for key: String) -> [String] {
         var problems: [String] = []
         let segments = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        let regex = try! NSRegularExpression(pattern: "^\(style.segmentPattern)$")
-        if segments.contains(where: { segment in
-            regex.firstMatch(in: segment, range: NSRange(segment.startIndex..., in: segment)) == nil
-        }) {
-            problems.append("segments must match \(style.rawValue) (\(style.segmentPattern))")
+        if !style.matches(key) {
+            problems.append("segments must match \(style.rawValue) (first \(style.segmentPattern), then \(style.laterSegmentPattern))")
         }
         if segments.count < minDepth { problems.append("needs at least \(minDepth) segments") }
         if segments.count > maxDepth { problems.append("has more than \(maxDepth) segments") }
@@ -96,6 +116,40 @@ public struct KeyPolicy: Codable, Sendable, Equatable {
     public static func looksSemantic(_ key: String) -> Bool {
         key.contains(".") && !key.contains(where: \.isWhitespace) && !key.isEmpty
     }
+}
+
+/// Accepted translations of a glossary term: one string, or several forms
+/// (`de: [Konto, Konten]`) of which a translation must use at least one.
+public struct GlossaryTranslation: Codable, Sendable, Equatable, ExpressibleByStringLiteral, ExpressibleByArrayLiteral {
+    public var forms: [String]
+
+    public init(_ forms: [String]) { self.forms = forms }
+    public init(stringLiteral value: String) { forms = [value] }
+    public init(arrayLiteral elements: String...) { forms = elements }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let single = try? container.decode(String.self) {
+            forms = [single]
+        } else {
+            forms = try container.decode([String].self)
+        }
+        guard !forms.isEmpty, !forms.contains(where: \.isEmpty) else {
+            throw L10nError.config("glossary translations must be a non-empty string or list of strings")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if forms.count == 1 { try container.encode(forms[0]) } else { try container.encode(forms) }
+    }
+
+    /// Whether `text` uses one of the forms (case-insensitive).
+    public func isUsed(in text: String) -> Bool {
+        forms.contains { text.range(of: $0, options: .caseInsensitive) != nil }
+    }
+
+    public var display: String { forms.map { "\"\($0)\"" }.joined(separator: " or ") }
 }
 
 public struct TranslatorConfig: Codable, Sendable, Equatable {
@@ -116,8 +170,11 @@ public struct TranslatorConfig: Codable, Sendable, Equatable {
     /// Allow non-localhost endpoints and Ollama `:cloud` models. Off by default so
     /// source strings never leave the machine by accident.
     public var allowRemote: Bool
+    /// Style guidance for the model, by locale (`"*"` for every locale), e.g.
+    /// `{ de: "Use informal du. Say Konto, never Account." }`. Prompt only; lint does not check it.
+    public var instructions: [String: String]
 
-    public init(provider: Provider = .ollama, baseURL: String? = nil, model: String? = nil, batchSize: Int = 20, maxRetries: Int = 2, timeoutSeconds: Double = 600, temperature: Double = 0.2, allowRemote: Bool = false) {
+    public init(provider: Provider = .ollama, baseURL: String? = nil, model: String? = nil, batchSize: Int = 20, maxRetries: Int = 2, timeoutSeconds: Double = 600, temperature: Double = 0.2, allowRemote: Bool = false, instructions: [String: String] = [:]) {
         self.provider = provider
         self.baseURL = baseURL ?? (provider == .ollama ? "http://localhost:11434" : "http://localhost:1234")
         self.model = model
@@ -126,6 +183,7 @@ public struct TranslatorConfig: Codable, Sendable, Equatable {
         self.timeoutSeconds = timeoutSeconds
         self.temperature = temperature
         self.allowRemote = allowRemote
+        self.instructions = instructions
     }
 
     public init(from decoder: Decoder) throws {
@@ -139,7 +197,8 @@ public struct TranslatorConfig: Codable, Sendable, Equatable {
             maxRetries: try container.decodeIfPresent(Int.self, forKey: .maxRetries) ?? 2,
             timeoutSeconds: try container.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? 600,
             temperature: try container.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.2,
-            allowRemote: try container.decodeIfPresent(Bool.self, forKey: .allowRemote) ?? false
+            allowRemote: try container.decodeIfPresent(Bool.self, forKey: .allowRemote) ?? false,
+            instructions: try container.decodeIfPresent([String: String].self, forKey: .instructions) ?? [:]
         )
     }
 }
@@ -191,8 +250,9 @@ public struct L10nConfig: Codable, Sendable, Equatable {
     public var semanticKeys: Bool
     public var keys: KeyPolicy
     public var rules: [String: Severity]
-    /// term → locale → required translation. Use the term itself to keep it untranslated.
-    public var glossary: [String: [String: String]]
+    /// term → locale → required translation (one string or a list of accepted forms).
+    /// Use the term itself to keep it untranslated.
+    public var glossary: [String: [String: GlossaryTranslation]]
     /// CLDR plural categories for languages missing from the built-in table, e.g. `{ xx: [one, few, other] }`.
     public var pluralCategories: [String: [String]]
     public var translator: TranslatorConfig
@@ -233,7 +293,7 @@ public struct L10nConfig: Codable, Sendable, Equatable {
         semanticKeys = try container.decodeIfPresent(Bool.self, forKey: .semanticKeys) ?? defaults.semanticKeys
         keys = try container.decodeIfPresent(KeyPolicy.self, forKey: .keys) ?? defaults.keys
         rules = try container.decodeIfPresent([String: Severity].self, forKey: .rules) ?? defaults.rules
-        glossary = try container.decodeIfPresent([String: [String: String]].self, forKey: .glossary) ?? defaults.glossary
+        glossary = try container.decodeIfPresent([String: [String: GlossaryTranslation]].self, forKey: .glossary) ?? defaults.glossary
         pluralCategories = try container.decodeIfPresent([String: [String]].self, forKey: .pluralCategories) ?? defaults.pluralCategories
         for (locale, categories) in pluralCategories where !PluralRules.validate(categories) {
             throw L10nError.config("pluralCategories.\(locale) must list distinct CLDR categories (zero, one, two, few, many, other) including other")

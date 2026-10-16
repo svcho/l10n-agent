@@ -44,6 +44,8 @@ public enum StatusCommand {
                 if entry.isManual { manual += 1 }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
+                // Like lint: values without letters ("%lld", "•") need no translation.
+                guard FormatSpecifier.hasText(sourceNode.leaves.first?.unit.value ?? key) else { continue }
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 for locale in locales {
                     perLocale[locale]!.total += 1
@@ -65,6 +67,19 @@ public enum StatusCommand {
             result.append(CatalogStatus(catalog: path, sourceLanguage: catalog.sourceLanguage, keys: keyCount, manualKeys: manual, locales: locales.compactMap { perLocale[$0] }))
         }
         return StatusReport(sourceLanguage: project.sourceLanguage, targetLocales: locales, codeStyle: project.usesSymbols ? "symbols" : "literal", catalogs: result)
+    }
+
+    /// `catalog locale percent%` for every catalog/locale below `percent`. With
+    /// `approvedOnly`, translations waiting for review do not count.
+    public static func below(_ report: StatusReport, percent: Int, approvedOnly: Bool = false) -> [String] {
+        report.catalogs.flatMap { catalog in
+            catalog.locales.compactMap { locale -> String? in
+                let value = approvedOnly
+                    ? (locale.total == 0 ? 100 : Int((Double(locale.approved) / Double(locale.total) * 100).rounded(.down)))
+                    : locale.percentComplete
+                return value < percent ? "\(catalog.catalog) \(locale.locale) \(value)%" : nil
+            }
+        }
     }
 
     public static func text(_ report: StatusReport) -> String {

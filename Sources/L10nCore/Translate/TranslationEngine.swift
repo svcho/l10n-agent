@@ -65,9 +65,40 @@ public struct ProvidedTranslation: Codable, Equatable, Sendable {
     public var value: String?
     /// For plural keys: CLDR category → text.
     public var forms: [String: String]?
+
+    public init(catalog: String? = nil, key: String, locale: String, value: String? = nil, forms: [String: String]? = nil) {
+        self.catalog = catalog
+        self.key = key
+        self.locale = locale
+        self.value = value
+        self.forms = forms
+    }
+
+    /// From `set-translation` options: either a value or `category=text` forms.
+    public static func fromOptions(key: String, locale: String, value: String?, forms: [String], catalog: String?) throws -> ProvidedTranslation {
+        var parsed: [String: String] = [:]
+        for entry in forms {
+            guard let separator = entry.firstIndex(of: "="), separator != entry.startIndex else {
+                throw L10nError.config("--form must be category=text, got \(entry)")
+            }
+            parsed[String(entry[..<separator])] = String(entry[entry.index(after: separator)...])
+        }
+        guard (value == nil) != parsed.isEmpty else { throw L10nError.config("pass either --value or --form") }
+        return ProvidedTranslation(catalog: catalog, key: key, locale: locale, value: value, forms: parsed.isEmpty ? nil : parsed)
+    }
 }
 
 public final class TranslationEngine: @unchecked Sendable {
+    /// Why a real run with this translator would stop (for `--dry-run`), or nil when it would start.
+    public static func refusal(_ config: TranslatorConfig, modelOverride: String? = nil) async -> String? {
+        do {
+            _ = try await ChatModelFactory.make(config, modelOverride: modelOverride)
+            return nil
+        } catch {
+            return "a real run would stop: \(error)"
+        }
+    }
+
     public let project: Project
     public var progress: (@Sendable (String) -> Void)?
 
@@ -115,7 +146,8 @@ public final class TranslationEngine: @unchecked Sendable {
                 if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
-                guard sourceNode.leaves.contains(where: { !$0.unit.value.isEmpty }) else { continue }
+                // Like lint and status: values without words ("%lld", "•") are never sent.
+                guard sourceNode.leaves.contains(where: { FormatSpecifier.hasText($0.unit.value) }) else { continue }
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 let shapes = Self.unitShapes(sourceNode, path: [])
 
@@ -604,9 +636,9 @@ public final class TranslationEngine: @unchecked Sendable {
         for (term, translations) in project.config.glossary.sorted(by: { $0.key < $1.key }) {
             guard let required = translations[unit.locale] else { continue }
             for pair in pairs where pair.source.range(of: term, options: .caseInsensitive) != nil
-                && pair.target.range(of: required, options: .caseInsensitive) == nil {
+                && !required.isUsed(in: pair.target) {
                 let form = pair.label.map { " in form \"\($0)\"" } ?? ""
-                return "Glossary: translate \"\(term)\" as \"\(required)\"\(form)."
+                return "Glossary: translate \"\(term)\" as \(required.display)\(form)."
             }
         }
         return nil
@@ -628,11 +660,17 @@ public final class TranslationEngine: @unchecked Sendable {
             "- If an item has \"feedback\", your previous answer was rejected for that reason; fix it.",
         ]
         let glossary = project.config.glossary.sorted(by: { $0.key < $1.key }).compactMap { term, translations in
-            translations[locale].map { "- \(term) => \($0)" }
+            translations[locale].map { "- \(term) => \($0.forms.joined(separator: " / "))" }
         }
         if !glossary.isEmpty {
-            lines.append("Mandatory glossary:")
+            lines.append("Mandatory glossary (use the fitting grammatical form):")
             lines += glossary
+        }
+        let instructions = [project.config.translator.instructions["*"], project.config.translator.instructions[locale]].compactMap { $0 }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if !instructions.isEmpty {
+            lines.append("Style guide from the app's developers:")
+            lines += instructions.map { "- \($0)" }
         }
         lines.append(#"Reply with only a JSON object: {"translations":[{"id":"1","text":"..."},{"id":"2","forms":{"one":"...","other":"..."}}]} containing every id exactly once. No markdown, no explanations."#)
         return lines.joined(separator: "\n")

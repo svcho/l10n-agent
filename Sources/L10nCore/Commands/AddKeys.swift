@@ -7,13 +7,34 @@ public struct NewKey: Codable, Equatable, Sendable {
     public var comment: String?
     /// Catalog path relative to the project root; defaults to the project's default catalog.
     public var catalog: String?
+    /// `false` marks the key "Don't translate". Keys that are not semantic (`%lld`, `•`)
+    /// are added the way Xcode extracts them, with no source value or key-style check.
+    public var shouldTranslate: Bool?
 
-    public init(key: String, value: String, comment: String? = nil, catalog: String? = nil) {
+    public init(key: String, value: String, comment: String? = nil, catalog: String? = nil, shouldTranslate: Bool? = nil) {
         self.key = key
         self.value = value
         self.comment = comment
         self.catalog = catalog
+        self.shouldTranslate = shouldTranslate
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        shouldTranslate = try container.decodeIfPresent(Bool.self, forKey: .shouldTranslate)
+        // A don't-translate literal (`%lld`) is its own value; semantic keys still need one.
+        if shouldTranslate == false, !KeyPolicy.looksSemantic(key) {
+            value = try container.decodeIfPresent(String.self, forKey: .value) ?? key
+        } else {
+            value = try container.decode(String.self, forKey: .value)
+        }
+        comment = try container.decodeIfPresent(String.self, forKey: .comment)
+        catalog = try container.decodeIfPresent(String.self, forKey: .catalog)
+    }
+
+    /// A don't-translate entry for a literal Xcode extracts as is (`Text("\(count)")` → `%lld`).
+    var isExtractedLiteral: Bool { shouldTranslate == false && !KeyPolicy.looksSemantic(key) }
 }
 
 public struct AddKeysResult: Codable, Equatable, Sendable {
@@ -57,6 +78,20 @@ public enum AddKeysCommand {
                     catalog = FileManager.default.fileExists(atPath: url.path) ? try StringCatalog.load(url) : StringCatalog.empty(url: url, sourceLanguage: project.sourceLanguage)
                 }
 
+                if item.isExtractedLiteral {
+                    if let existing = catalog.entry(item.key), !existing.shouldTranslate {
+                        result.unchanged.append(item.key)
+                        continue
+                    }
+                    // New, or an extracted entry that is now marked "Don't translate".
+                    var entry = catalog.entry(item.key) ?? CatalogEntry()
+                    entry.shouldTranslate = false
+                    if let comment = item.comment { entry.comment = comment }
+                    catalog.setEntry(item.key, entry)
+                    catalogs[catalogPath] = catalog
+                    result.added.append(item.key)
+                    continue
+                }
                 let violations = project.config.keys.violations(for: item.key)
                 if !violations.isEmpty {
                     result.rejected[item.key] = violations.joined(separator: "; ")
@@ -86,6 +121,7 @@ public enum AddKeysCommand {
                 var entry = CatalogEntry()
                 entry.extractionState = "manual"
                 entry.comment = item.comment
+                if item.shouldTranslate == false { entry.shouldTranslate = false }
                 entry.setLocalization(catalog.sourceLanguage, LocalizationNode(unit: StringUnit(state: StringUnit.State.translated, value: item.value)))
                 catalog.setEntry(item.key, entry)
                 catalogs[catalogPath] = catalog

@@ -39,7 +39,7 @@ struct MCPServerTests {
     @Test func listsTools() async throws {
         let client = try await connect(root: try makeProject())
         let (tools, _) = try await client.listTools()
-        #expect(Set(tools.map(\.name)) == ["l10n_lint", "l10n_status", "l10n_plan_fixes", "l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept"])
+        #expect(Set(tools.map(\.name)) == ["l10n_lint", "l10n_status", "l10n_plan_fixes", "l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept", "l10n_migrate_strings"])
     }
 
     @Test func lintPlanApplyAndTranslateLoop() async throws {

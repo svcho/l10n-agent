@@ -30,7 +30,7 @@ struct LinterTests {
         #expect(format.first?.locales == ["ja"])
         #expect(findings(Rules.missingTranslation).first { $0.key == "inbox.unread" }?.locales == ["de", "ja", "pl"])
         #expect(findings(Rules.needsReview).map(\.key) == ["files.shared"])
-        #expect(findings(Rules.unusedKey).map(\.key) == ["old.unused"])
+        #expect(findings(Rules.unusedKey).map(\.key) == ["files.shared", "inbox.unread", "old.unused", "settings.darkMode", "settings.dark_mode"], "stale, plus manual keys no Swift file references")
         #expect(Set(findings(Rules.symbolCollision).compactMap(\.key)) == ["settings.darkMode", "settings.dark_mode"])
         #expect(findings(Rules.keyStyle).map(\.key) == ["settings.dark_mode"])
         #expect(report.summary.errors == 3)

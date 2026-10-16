@@ -19,6 +19,9 @@ public enum SiteKind: String, Equatable, Sendable, Codable {
     case concatenation
     /// `String(format: "...")` with user-facing text.
     case formatString
+    /// A literal without letters (`Text("\(count)")`, `Text("%@ · %@")`) that Xcode still
+    /// extracts as a catalog key; it needs a "Don't translate" entry, not a translation.
+    case nonText
 }
 
 /// How a fix must rewrite the code at this site.
@@ -75,6 +78,14 @@ public struct StringSite: Equatable, Sendable, Codable {
     public var unfixableReason: String?
     /// A `comment:` argument the developer already wrote at the call site.
     public var codeComment: String?
+    /// Found only by an argument label or a variable name on an API the tool does not know,
+    /// so it may not be shown to users. Fixes for these need review.
+    public var heuristic: Bool = false
+    /// Declared type of each interpolated expression, in order, when the file declares it
+    /// (`keyCode: UInt32`). `nil` entries are unknown.
+    public var typeHints: [String?] = []
+    /// The function or property the literal is in, e.g. `keyLabel(for:)` or `title`.
+    public var enclosingMember: String?
 
     public var fixable: Bool { unfixableReason == nil }
 

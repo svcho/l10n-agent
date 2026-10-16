@@ -49,7 +49,7 @@ struct L10nAgent: AsyncParsableCommand {
           l10n-agent translate            # fill translations with a local LLM (needs_review)
         """,
         version: version,
-        subcommands: [Lint.self, Fix.self, Translate.self, Status.self, Accept.self, Doctor.self, Init.self, ListRules.self, MCP.self]
+        subcommands: [Lint.self, Fix.self, Translate.self, SetTranslation.self, Status.self, Accept.self, Doctor.self, Init.self, Migrate.self, ListRules.self, MCP.self]
     )
 }
 
@@ -62,7 +62,7 @@ struct Lint: AsyncParsableCommand {
     @Option(parsing: .upToNextOption, help: "Only scan these Swift files or folders.") var files: [String] = []
     @Flag(help: "Skip Swift code; check catalogs only.") var catalogsOnly = false
     @Flag(help: "Skip catalogs; check Swift code only.") var codeOnly = false
-    @Option(help: "Exit non-zero when a finding has at least this severity: error, warning, info.") var failOn: Severity = .error
+    @Option(help: "Exit non-zero when a finding has at least this severity: error, warning (default; includes missing and stale translations and unlocalized text), info, off (never fail).") var failOn: Severity = .warning
 
     func run() async throws {
         try await execute {
@@ -75,7 +75,7 @@ struct Lint: AsyncParsableCommand {
             ))
             let output = Reporter.render(report, format: format, root: project.root)
             if !output.isEmpty { print(output) }
-            return report.failed(threshold: failOn) ? ExitCodes.findings : 0
+            return report.exitCode(failOn: failOn) == 0 ? 0 : ExitCodes.findings
         }
     }
 }
@@ -105,6 +105,10 @@ struct Fix: AsyncParsableCommand {
             if let planPath = plan {
                 let data = try Data(contentsOf: URL(fileURLWithPath: planPath))
                 fixPlan = try JSONDecoder().decode(FixPlan.self, from: data)
+                if !apply {
+                    // Show what apply would write from the edited keys, comments and specifiers.
+                    fixPlan = try fixer.refresh(fixPlan)
+                }
             } else {
                 fixPlan = try fixer.plan(rules: rules.isEmpty ? nil : Set(rules), files: files.isEmpty ? nil : files, findingIDs: ids.isEmpty ? nil : Set(ids))
                 if llmKeys, !fixPlan.items.isEmpty {
@@ -167,7 +171,11 @@ struct Translate: AsyncParsableCommand {
             let engine = TranslationEngine(project: project) { message in
                 FileHandle.standardError.write(Data("\(message)\n".utf8))
             }
-            let report = try await engine.run(options, model: chatModel)
+            var report = try await engine.run(options, model: chatModel)
+            // Tell now, not on the real run, when the translator would be refused.
+            if dryRun, report.planned > 0, let refusal = await TranslationEngine.refusal(project.config.translator, modelOverride: model) {
+                report.warnings.append(refusal)
+            }
             if format == .json {
                 print(JSONOutput.encode(report))
             } else {
@@ -201,16 +209,65 @@ enum TranslateText {
     }
 }
 
+struct SetTranslation: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "set-translation",
+        abstract: "Write translations you made yourself (validated, state needs_review).",
+        discussion: """
+        Examples:
+          l10n-agent set-translation --key settings.title --locale de --value "Einstellungen"
+          l10n-agent set-translation --key inbox.count --locale de --form one="%lld Nachricht" --form other="%lld Nachrichten"
+          l10n-agent set-translation --file translations.json   # [{"key", "locale", "value" | "forms", "catalog"?}]
+        Approved (translated) entries are never overwritten.
+        """
+    )
+    @OptionGroup var global: GlobalOptions
+    @Option(help: "Key to translate.") var key: String?
+    @Option(help: "Target locale.") var locale: String?
+    @Option(help: "Translation with the same format specifiers as the source.") var value: String?
+    @Option(parsing: .singleValue, help: "A plural form as category=text; repeat for each category.") var form: [String] = []
+    @Option(help: "Catalog path, when the key exists in several catalogs.") var catalog: String?
+    @Option(help: "JSON file with a list of translations.") var file: String?
+    @Option(help: "Output format: text or json.") var format: OutputFormat = .text
+
+    func run() async throws {
+        try await execute {
+            var provided: [ProvidedTranslation] = []
+            if let file {
+                let data = try Data(contentsOf: URL(fileURLWithPath: file))
+                do {
+                    provided = try JSONDecoder().decode([ProvidedTranslation].self, from: data)
+                } catch {
+                    throw L10nError.config("\(file) must be a JSON list of {key, locale, value | forms, catalog?}: \(error)")
+                }
+            }
+            if let key {
+                guard let locale else { throw L10nError.config("--locale is required with --key") }
+                provided.append(try ProvidedTranslation.fromOptions(key: key, locale: locale, value: value, forms: form, catalog: catalog))
+            }
+            guard !provided.isEmpty else { throw L10nError.config("pass --key/--locale/--value or --file") }
+            let report = try TranslationEngine(project: try global.project()).applyProvided(provided)
+            print(format == .json ? JSONOutput.encode(report) : TranslateText.render(report))
+            return report.failed.isEmpty ? 0 : ExitCodes.findings
+        }
+    }
+}
+
 struct Status: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Show translation coverage per catalog and locale.")
     @OptionGroup var global: GlobalOptions
     @Option(help: "Output format: text or json.") var format: OutputFormat = .text
+    @Option(help: "Exit non-zero when any catalog/locale is below this percentage (approved + needs review), e.g. 100.") var failUnder: Int?
+    @Flag(help: "With --fail-under, count only approved translations.") var approvedOnly = false
 
     func run() async throws {
         try await execute {
             let report = try StatusCommand.run(project: try global.project())
             print(format == .json ? JSONOutput.encode(report) : StatusCommand.text(report))
-            return 0
+            guard let failUnder else { return 0 }
+            let below = StatusCommand.below(report, percent: failUnder, approvedOnly: approvedOnly)
+            for line in below { FileHandle.standardError.write(Data("below \(failUnder)%: \(line)\n".utf8)) }
+            return below.isEmpty ? 0 : ExitCodes.findings
         }
     }
 }
@@ -250,16 +307,55 @@ struct Doctor: AsyncParsableCommand {
 struct Init: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Create .l10n-agent.yml and record fingerprints for existing translations.")
     @OptionGroup var global: GlobalOptions
-    @Option(help: "Local model to configure.") var model: String?
+    @Option(help: "Model to configure.") var model: String?
     @Flag(help: "Overwrite an existing config.") var force = false
+    @Flag(help: "Write translator.allowRemote: true for a remote endpoint or :cloud model (runs also need L10N_AGENT_ALLOW_REMOTE=1).") var allowRemote = false
 
     func run() async throws {
         try await execute {
-            let result = try await InitCommand.run(root: URL(fileURLWithPath: global.path), model: model, force: force)
+            let result = try await InitCommand.run(root: URL(fileURLWithPath: global.path), model: model, force: force, allowRemote: allowRemote)
             print(result.createdConfig ? "Wrote \(result.configPath)" : "Kept \(result.configPath)")
             print("Recorded \(result.baselined) translation fingerprint(s).")
             for note in result.notes { print("note: \(note)") }
             return 0
+        }
+    }
+}
+
+struct Migrate: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Convert legacy .lproj/*.strings and *.stringsdict files into String Catalogs.",
+        discussion: """
+        Each <Table>.strings group becomes <Table>.xcstrings next to the .lproj folders. Values and \
+        the comment above each entry are kept, existing translations are marked translated, plural \
+        .stringsdict rules become plural variations or substitutions, and fingerprints are recorded. \
+        Without --apply only a preview is printed. Storyboard/XIB strings are left to Xcode.
+        """
+    )
+    @OptionGroup var global: GlobalOptions
+    @Flag(help: "Write the catalogs.") var apply = false
+    @Flag(help: "With --apply, delete the migrated .strings/.stringsdict files (and empty .lproj folders).") var removeLegacy = false
+    @Option(help: "Output format: text or json.") var format: OutputFormat = .text
+
+    func run() async throws {
+        try await execute {
+            guard apply || !removeLegacy else { throw L10nError.config("--remove-legacy needs --apply") }
+            let result = try MigrateCommand.run(project: try global.project(), apply: apply, removeLegacy: removeLegacy)
+            if format == .json {
+                print(JSONOutput.encode(result))
+                return result.failed.isEmpty ? 0 : ExitCodes.findings
+            }
+            for table in result.tables {
+                print("\(apply ? (table.created ? "created" : "updated") : (table.created ? "would create" : "would update")) \(table.catalog): \(table.keys) key(s), \(table.locales.joined(separator: ", "))")
+                for source in table.sources { print("  from \(source)") }
+                for conflict in table.conflicts { print("  kept existing catalog value for \(conflict)") }
+            }
+            for (file, reason) in result.skipped.sorted(by: { $0.key < $1.key }) { print("skipped \(file): \(reason)") }
+            for (file, reason) in result.failed.sorted(by: { $0.key < $1.key }) { print("failed \(file): \(reason)") }
+            for file in result.removed { print("removed \(file)") }
+            for note in result.notes { print("note: \(note)") }
+            if !apply, !result.tables.isEmpty { print("\nRun again with --apply to write the catalogs (add --remove-legacy to delete the old files).") }
+            return result.failed.isEmpty ? 0 : ExitCodes.findings
         }
     }
 }

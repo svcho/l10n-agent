@@ -10,6 +10,9 @@ public struct XcodeSettings: Equatable, Sendable {
     /// Per `.xcodeproj` (keyed by its path): whether symbol generation is on for every
     /// build configuration that sets it. Mixed projects count as disabled for rewrites.
     public var symbolGeneration: [String: SymbolGeneration] = [:]
+    /// Per `.xcodeproj`: the build configurations (`Target/Debug`) that set
+    /// `STRING_CATALOG_GENERATE_SYMBOLS = NO`. Unit and UI test bundles are ignored.
+    public var symbolsDisabledIn: [String: [String]] = [:]
 
     public enum SymbolGeneration: String, Equatable, Sendable {
         case enabled
@@ -50,12 +53,55 @@ public struct XcodeSettings: Equatable, Sendable {
             if settings.developmentRegion == nil, let match = text.firstMatch(of: /developmentRegion\s*=\s*"?([A-Za-z0-9_-]+)"?\s*;/) {
                 settings.developmentRegion = String(match.1)
             }
-            let enabled = text.matches(of: /STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*"?YES"?/).count
-            let disabled = text.matches(of: /STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*"?NO"?/).count
-            settings.symbolGeneration[project.path] = enabled > 0 ? (disabled > 0 ? .mixed : .enabled) : .disabled
+            let (enabled, disabled) = symbolSettings(pbxproj: text)
+            settings.symbolGeneration[project.path] = !enabled.isEmpty ? (!disabled.isEmpty ? .mixed : .enabled) : .disabled
+            if !disabled.isEmpty { settings.symbolsDisabledIn[project.path] = disabled }
         }
         settings.knownRegions = regions
         return settings
+    }
+
+    /// Build configurations that set `STRING_CATALOG_GENERATE_SYMBOLS` to YES and to NO,
+    /// named `Target/Configuration` (`Project/Configuration` for project-level settings).
+    /// Unit and UI test bundles never contain app strings, so their settings are ignored.
+    static func symbolSettings(pbxproj text: String) -> (enabled: [String], disabled: [String]) {
+        guard let plist = try? PropertyListSerialization.propertyList(from: Data(text.utf8), format: nil) as? [String: Any],
+              let objects = plist["objects"] as? [String: [String: Any]]
+        else {
+            // Not a property list (or a stub): count the settings textually.
+            let enabled = text.matches(of: /STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*"?YES"?/).map { _ in "?" }
+            let disabled = text.matches(of: /STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*"?NO"?/).map { _ in "?" }
+            return (enabled, disabled)
+        }
+        var owners: [String: (name: String, isTest: Bool)] = [:]   // configuration id → owner
+        for object in objects.values {
+            guard let isa = object["isa"] as? String, let listID = object["buildConfigurationList"] as? String,
+                  let list = objects[listID], let configurations = list["buildConfigurations"] as? [String]
+            else { continue }
+            let owner: (String, Bool)
+            switch isa {
+            case "PBXNativeTarget", "PBXAggregateTarget", "PBXLegacyTarget":
+                let productType = object["productType"] as? String ?? ""
+                owner = (object["name"] as? String ?? "target", productType.contains("unit-test") || productType.contains("ui-testing"))
+            case "PBXProject":
+                owner = ("Project", false)
+            default:
+                continue
+            }
+            for configuration in configurations { owners[configuration] = owner }
+        }
+        var enabled: [String] = []
+        var disabled: [String] = []
+        for (id, object) in objects where object["isa"] as? String == "XCBuildConfiguration" {
+            guard let settings = object["buildSettings"] as? [String: Any],
+                  let value = settings["STRING_CATALOG_GENERATE_SYMBOLS"] as? String
+            else { continue }
+            let owner = owners[id] ?? ("?", false)
+            if owner.isTest { continue }
+            let name = "\(owner.name)/\(object["name"] as? String ?? "?")"
+            if value == "YES" { enabled.append(name) } else if value == "NO" { disabled.append(name) }
+        }
+        return (enabled.sorted(), disabled.sorted())
     }
 }
 

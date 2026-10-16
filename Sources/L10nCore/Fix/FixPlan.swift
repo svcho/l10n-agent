@@ -55,6 +55,9 @@ public struct FixItem: Codable, Equatable, Sendable {
     public var reusesExistingKey: Bool
     /// An English-text key whose translations are copied to the new key.
     public var migrateFrom: String?
+    /// The literal has no text (`Text("\(count)")`): the fix only adds the key as
+    /// "Don't translate" to the catalog and leaves the code unchanged.
+    public var doNotTranslate: Bool?
 }
 
 public struct FixPlan: Codable, Equatable, Sendable {

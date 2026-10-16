@@ -11,7 +11,7 @@ public struct L10nMCPServer: Sendable {
     public let version: String
     /// Mutating tools run one at a time; clients may send calls concurrently.
     private let mutations = AsyncLock()
-    static let mutatingTools: Set<String> = ["l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept"]
+    static let mutatingTools: Set<String> = ["l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept", "l10n_migrate_strings"]
 
     public init(root: URL, version: String) {
         self.root = root.standardizedFileURL
@@ -21,6 +21,8 @@ public struct L10nMCPServer: Sendable {
     static let instructions = """
     l10n-agent manages localization of an Xcode project whose source of truth is its String Catalogs (.xcstrings).
     Workflow: l10n_lint → l10n_plan_fixes → (optionally edit keys/comments/specifiers in the plan) → l10n_apply_fixes → l10n_translate (local LLM) or l10n_set_translations (your own translations) → l10n_lint again.
+    Projects with legacy .lproj/*.strings files: run l10n_migrate_strings (apply: true) first.
+    Plan items with status needsReview were found by a name or label only, or have guessed placeholder types: check them before setting status to ready.
     Translations written by tools get state needs_review; humans approve them in Xcode. Approved translations are never overwritten.
     """
 
@@ -126,19 +128,26 @@ public struct L10nMCPServer: Sendable {
         ),
         Tool(
             name: "l10n_add_keys",
-            description: "Add manual keys to a String Catalog before writing code that uses them. Returns the generated Swift symbol for each key when symbol generation is enabled (use Text(.symbol) / String(localized: .symbol)). Set catalog when the project has several catalogs.",
+            description: "Add manual keys to a String Catalog before writing code that uses them. Returns the generated Swift symbol for each key when symbol generation is enabled (use Text(.symbol) / String(localized: .symbol)). Set catalog when the project has several catalogs. With shouldTranslate: false the key is marked Don't translate; use that for literals without text that Xcode extracts (\"%lld\", \"•\"), which need no value.",
             inputSchema: schema([
                 "keys": .object([
                     "type": "array",
                     "items": schema([
                         "key": ["type": "string"],
-                        "value": ["type": "string", "description": "Source text with format specifiers, e.g. \"Hello %@\"."],
+                        "value": ["type": "string", "description": "Source text with format specifiers, e.g. \"Hello %@\". Optional when shouldTranslate is false."],
                         "comment": ["type": "string"],
                         "catalog": ["type": "string"],
-                    ], required: ["key", "value"]),
+                        "shouldTranslate": ["type": "boolean", "description": "false marks the key Don't translate."],
+                    ], required: ["key"]),
                 ]),
             ], required: ["keys"]),
             annotations: .init(readOnlyHint: false, destructiveHint: false, openWorldHint: false)
+        ),
+        Tool(
+            name: "l10n_migrate_strings",
+            description: "Convert legacy .lproj/*.strings and *.stringsdict files into String Catalogs (.xcstrings) next to the .lproj folders, keeping every value and comment; existing translations become translated. Preview unless apply is true; remove_legacy (with apply) deletes the old files.",
+            inputSchema: schema(["apply": ["type": "boolean"], "remove_legacy": ["type": "boolean"]]),
+            annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: false)
         ),
         Tool(
             name: "l10n_accept",
@@ -157,6 +166,7 @@ public struct L10nMCPServer: Sendable {
     struct SetTranslationsInput: Decodable { var translations: [ProvidedTranslation] }
     struct AddKeysInput: Decodable { var keys: [NewKey] }
     struct AcceptInput: Decodable { var keys: [String]?; var locales: [String]? }
+    struct MigrateInput: Decodable { var apply: Bool?; var remove_legacy: Bool? }
 
     func call(name: String, arguments: [String: Value]) async -> CallTool.Result {
         guard Self.mutatingTools.contains(name) else {
@@ -209,6 +219,12 @@ public struct L10nMCPServer: Sendable {
             case "l10n_set_translations":
                 let input = try decode(SetTranslationsInput.self, arguments)
                 return success(try TranslationEngine(project: project).applyProvided(input.translations))
+            case "l10n_migrate_strings":
+                let input = try decode(MigrateInput.self, arguments)
+                if input.remove_legacy == true, input.apply != true {
+                    throw L10nError.config("remove_legacy needs apply: true")
+                }
+                return success(try MigrateCommand.run(project: project, apply: input.apply ?? false, removeLegacy: input.remove_legacy ?? false))
             case "l10n_add_keys":
                 let input = try decode(AddKeysInput.self, arguments)
                 return success(try AddKeysCommand.run(project: project, keys: input.keys))

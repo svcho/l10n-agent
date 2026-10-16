@@ -89,7 +89,26 @@ enum APITables {
         "NSColor", "URL", "URLRequest", "NSPredicate", "Notification", "NSNotification", "Selector",
         "accessibilityIdentifier", "UserDefaults", "Bundle", "NSRegularExpression", "Regex", "Logger",
         "fileImporter", "font", "debug", "trace", "notice", "fault", "critical",
+        // Queue, lock and log names are identifiers for tools, never shown in the UI.
+        "DispatchQueue", "OperationQueue", "OSLog", "OSSignposter", "Thread", "NSLock", "NSRecursiveLock",
+        "DispatchSemaphore", "NSUserActivity", "NotificationCenter", "UNNotificationCategory",
     ]
+
+    /// `userInfo` keys of `NSError` whose values are shown to users.
+    static let errorUserInfoKeys: Set<String> = [
+        "NSLocalizedDescriptionKey", "NSLocalizedFailureReasonErrorKey", "NSLocalizedRecoverySuggestionErrorKey",
+        "NSLocalizedFailureErrorKey",
+    ]
+
+    /// Leading camel-case words of names that hold diagnostics, not UI text
+    /// (`logMessage`, `debugDescription`, `traceLabel`).
+    static let diagnosticNamePrefixes: Set<String> = ["log", "debug", "trace", "analytics", "telemetry", "internal"]
+
+    static func isDiagnosticName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let firstWord = String(trimmed.prefix { !$0.isUppercase }).lowercased()
+        return diagnosticNamePrefixes.contains(firstWord)
+    }
 
     static func lastCamelWord(_ name: String) -> String {
         let trimmed = name.trimmingCharacters(in: CharacterSet(charactersIn: "_"))

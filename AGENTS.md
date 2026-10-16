@@ -19,7 +19,7 @@ In scope:
 Out of scope:
 
 - Android, web, cross-platform frameworks
-- `.strings` / `.stringsdict` (users migrate with Xcode's "Migrate to String Catalog")
+- `.strings` / `.stringsdict` as a source of truth (`migrate` converts them to String Catalogs once)
 - hosted services, remote state, OTA delivery
 - Objective-C scanning
 - authoring new plural variations in code (lint suggests them; translate fills existing ones)
@@ -29,11 +29,11 @@ Out of scope:
 - `Sources/L10nCore/JSON/` order-preserving JSON parser and Xcode-identical writer
 - `Sources/L10nCore/Catalog/` catalog model, format specifiers, parity, symbol naming, fingerprints
 - `Sources/L10nCore/Project/` config (`.l10n-agent.yml`) and project discovery (pbxproj settings)
-- `Sources/L10nCore/Scanner/` SwiftSyntax scanner and API tables
+- `Sources/L10nCore/Scanner/` SwiftSyntax scanner, API tables and the project-wide index (`ProjectIndex`)
 - `Sources/L10nCore/Lint/` rules, linter, reporters (text, xcode, json, sarif)
 - `Sources/L10nCore/Fix/` key suggestion, fix plans, applying edits, LLM key naming
 - `Sources/L10nCore/Translate/` chat-model clients, masking, plural rules, translation engine
-- `Sources/L10nCore/Commands/` status, doctor, init, add-keys
+- `Sources/L10nCore/Commands/` status, doctor, init, add-keys, migrate
 - `Sources/L10nMCP/` MCP server
 - `Sources/l10n-agent/` CLI (swift-argument-parser)
 - `Tests/` Swift Testing suites; `Tests/L10nCoreTests/Fixtures/SampleApp` is the integration fixture
@@ -49,7 +49,7 @@ Out of scope:
 - Fix plans are untrusted input: apply re-scans files, matches items to fresh sites, and takes only key, comment, specifier and status from the plan. The code style and target catalog are recomputed from the project. It refuses when a file changed, verifies the rewritten file still parses, and changes catalogs only for applied edits.
 - Rewrites keep declared types: literals typed `LocalizedStringResource` become a resource expression; `LocalizedStringKey`-typed literals are skipped. Literal-style resources in packages use `bundle: .atURL(Bundle.module.bundleURL)`.
 - Whole-call rewrites never drop code: wrapped literals and calls with extra arguments (`bundle:`, `locale:`, `defaultValue:`, non-literal `table:`/`comment:`) are skipped.
-- With `codeStyle: auto`, symbol rewrites are decided per file: only files of an `.xcodeproj` that enables symbol generation in every configuration get symbols; package targets, mixed projects and files whose owner is ambiguous (several projects in the same folder) get literals.
+- With `codeStyle: auto`, symbol rewrites are decided per file: only files of an `.xcodeproj` that enables symbol generation in every app/extension configuration get symbols (unit and UI test bundles are ignored; the pbxproj is read as a property list); package targets, mixed projects and files whose owner is ambiguous (several projects in the same folder) get literals.
 - `apply` loads every piece of state that can fail before writing, computes all changes in memory, then commits catalogs and fingerprints before source files through a `FileTransaction` that restores every written file if any write fails. `translate` (catalogs + fingerprints per batch) and `l10n_add_keys` use the same transaction. `init` holds one lock for all its writes.
 - `*` widths/precisions (`%*d`) count as integer arguments; strings with them are never reordered. The space flag (`% d`) counts only when the conversion ends the word, so prose such as "100% discount" stays text.
 - L10N110 and fix-time symbol checks apply only where symbols are generated (per catalog / per rewritten file).
@@ -69,10 +69,19 @@ Out of scope:
 - `.l10n-agent/fingerprints.json` is the only extra state. Comment edits do not make translations stale. A file that does not match the schema stops the command instead of being treated as empty.
 - MCP tools resolve every path inside the project root (symlinks resolved); provided translations are limited to target locales.
 - Tests stay offline: no live model calls. Tests that need Xcode tools are skipped when `xcrun` is unavailable.
+- Scanning uses a `ProjectIndex` of every project file: parameters declared `LocalizedStringKey`/`LocalizedStringResource` make literal arguments lookups (a `LocalizedStringKey` parameter is never rewritten) only when every same-named declaration with that label agrees, and properties or functions used only as arguments of logging calls (free logging functions, or `debug/info/warning/error/…` on a receiver named like a logger) are not UI text.
+- A literal that is an existing semantic key (`a.b`, no spaces) of its file's catalogs is never turned into a `defaultValue`; English text that Xcode extracted as a key elsewhere is still plain text. At a known UI API it is reported as a raw key (unfixable); at heuristic (label or name) matches it is silent.
+- Sites found only by an argument label or a variable name are `heuristic`; their fixes are `needsReview`. Generated files (a comment before the first declaration with "generated" plus "do not edit", or `@generated`/"autogenerated"; `///` doc comments do not count) and test files are skipped. `DispatchQueue(label:)` and other queue, lock and log names, and dotted identifiers, are not UI text.
+- Interpolations use the type the file declares for them (parameters, typed locals, typed properties) for their specifier; the nearest binding wins, and an untyped one (`{ x in }`, `for x in`, `if let x`, `case let .a(x)`) makes the type unknown. Only unknown types are guessed. When a plan edits a specifier, generated "%x is name." notes follow it.
+- `fix --plan` previews are recomputed through the same validation as `apply` (`Fixer.prepare`), never printed from the stored plan.
+- Letterless literals that Xcode extracts (L10N006) are fixed by a "Don't translate" catalog entry; the code is not changed. Lint and status ignore values without text once format specifiers are removed.
+- Unused manual keys (L10N106) count literals, generated-symbol identifiers, interpolated literal prefixes and `keys.dynamicPrefixes` across all project Swift files; `InfoPlist` and `AppShortcuts` tables are not checked.
+- `migrate` runs under the project lock, never overwrites an existing catalog value, cross-checks every `.strings` parse against `PropertyListSerialization`, verifies every value in memory before writing, and writes catalogs and fingerprints in one transaction. It stamps fingerprints only for translations it wrote (against their legacy source), never deletes a legacy file whose values conflicted, and ignores symlinks that leave the project. Interface Builder strings are skipped.
+- `lint` fails on warnings by default (`--fail-on warning`). Glossary translations may list several accepted forms; `translator.instructions` only shapes the prompt.
 
 ## Lint rule IDs
 
-L10N001-L10N005 (code), L10N100-L10N111 (catalogs). IDs are stable; add new rules with new IDs and document them in README.
+L10N001-L10N006 (code), L10N100-L10N112 (catalogs). IDs are stable; add new rules with new IDs and document them in README.
 
 ## Fast start
 

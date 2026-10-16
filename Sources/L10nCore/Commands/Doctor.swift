@@ -44,17 +44,58 @@ public enum DoctorCommand {
         let catalogs = (try? project.loadCatalogs()) ?? []
         let locales = project.targetLocales(catalogs: catalogs)
         checks.append(DoctorCheck(name: "locales", status: locales.isEmpty ? .warning : .ok, detail: locales.isEmpty ? "No target locales. Add languages in Xcode (Project > Info > Localizations) or set `locales:` in \(L10nConfig.fileName)." : "source \(project.sourceLanguage) → \(locales.joined(separator: ", "))"))
-        checks.append(DoctorCheck(name: "code-style", status: .ok, detail: project.usesSymbols ? "generated symbols (Text(.key))" : "String(localized:defaultValue:comment:) literals; enable STRING_CATALOG_GENERATE_SYMBOLS or set codeStyle: symbols for symbols"))
-        checks.append(DoctorCheck(name: "swift-files", status: .ok, detail: "\(project.swiftFiles.count) Swift file(s) in scope"))
+        checks.append(DoctorCheck(name: "code-style", status: .ok, detail: codeStyleDetail(project)))
+        checks.append(DoctorCheck(name: "swift-files", status: .ok, detail: swiftFilesDetail(project)))
 
         let config = project.config.translator
         do {
             let model = try await ChatModelFactory.make(config)
-            checks.append(DoctorCheck(name: "translator", status: .ok, detail: "\(config.provider.rawValue) at \(config.baseURL), model \(model.name)\(HTTP.isLocal(URL(string: config.baseURL) ?? URL(fileURLWithPath: "/")) ? ", local only" : " (remote endpoint)")"))
+            let remote = await ChatModelFactory.isRemote(config, model: model.name)
+            checks.append(DoctorCheck(name: "translator", status: .ok, detail: translatorDetail(config, model: model.name, remote: remote)))
         } catch {
             checks.append(DoctorCheck(name: "translator", status: .warning, detail: "\(error) (lint and fix still work; translate needs a local model)"))
         }
         return DoctorReport(checks: checks)
+    }
+
+    /// Files the scanner reads; tests and generated files are skipped and only counted.
+    static func swiftFilesDetail(_ project: Project) -> String {
+        let scanned = project.swiftFiles.filter { url in
+            guard let source = try? String(contentsOf: url, encoding: .utf8) else { return false }
+            return !SwiftScanner.isSkipped(path: project.relativePath(url), source: source)
+        }.count
+        let skipped = project.swiftFiles.count - scanned
+        return "\(scanned) Swift file(s) scanned\(skipped > 0 ? " (\(skipped) test or generated file(s) skipped)" : "")"
+    }
+
+    static func translatorDetail(_ config: TranslatorConfig, model: String, remote: Bool) -> String {
+        let where_ = remote
+            ? "runs remotely (allowed by translator.allowRemote and L10N_AGENT_ALLOW_REMOTE=1; strings leave this machine)"
+            : "local only"
+        return "\(config.provider.rawValue) at \(config.baseURL), model \(model), \(where_)"
+    }
+
+    static func codeStyleDetail(_ project: Project) -> String {
+        switch project.config.codeStyle {
+        case .symbols: return "generated symbols (Text(.key)), set by codeStyle: symbols"
+        case .literal: return "String(localized:defaultValue:comment:) literals, set by codeStyle: literal"
+        case .auto: break
+        }
+        var parts: [String] = []
+        for projectFile in project.xcode.projectFiles {
+            let name = projectFile.lastPathComponent
+            switch project.xcode.symbolGeneration[projectFile.path] ?? .disabled {
+            case .enabled:
+                parts.append("\(name): generated symbols")
+            case .mixed:
+                let off = project.xcode.symbolsDisabledIn[projectFile.path] ?? []
+                parts.append("\(name): literals, because STRING_CATALOG_GENERATE_SYMBOLS = NO in \(off.joined(separator: ", ")); set it to YES there (or codeStyle: symbols) to use symbols")
+            case .disabled:
+                parts.append("\(name): literals; enable STRING_CATALOG_GENERATE_SYMBOLS (or set codeStyle: symbols) to use symbols")
+            }
+        }
+        if parts.isEmpty { return "String(localized:defaultValue:comment:) literals (no Xcode project found)" }
+        return parts.joined(separator: "; ") + ". Swift package targets always use literals."
     }
 
     public static func text(_ report: DoctorReport) -> String {

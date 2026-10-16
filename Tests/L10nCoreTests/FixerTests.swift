@@ -16,7 +16,7 @@ struct FixerTests {
         #expect(welcome.status == .ready)
 
         let hello = try #require(item("ContentView.swift", 15))
-        #expect(hello.status == .needsReview, "name's type is a guess")
+        #expect(hello.status == .ready, "name is declared as String in ContentView")
         #expect(hello.sourceValue == "Hello, %@!")
         #expect(hello.replacement == "Text(.contentHello(name))")
 
@@ -81,6 +81,10 @@ struct FixerTests {
         let project = try Project.discover(root: root)
         var plan = try Fixer(project: project).plan(files: ["SampleApp/Tab.swift"])
         #expect(plan.items.count == 2)
+        // `var title: String` is found by its name only, so the agent confirms both items.
+        #expect(plan.items.allSatisfy { $0.status == .needsReview })
+        plan.items[0].status = .ready
+        plan.items[1].status = .ready
         plan.items[0].key = "Bad Key"
         plan.items[1].key = "tabs.profile.title"
         let result = try Fixer(project: project).apply(plan)
@@ -109,8 +113,8 @@ struct FixerTests {
         let plan = try Fixer(project: project).plan()
         #expect(plan.codeStyle == "literal")
         #expect(plan.items.map(\.replacement) == [
-            #"String(localized: "profile.hello.label", defaultValue: "Hello \(user.name)", table: "Settings", comment: "Label in ProfileView. %@ is user.name.")"#,
-            #"String(localized: "profile.savedDraft.label", defaultValue: "Saved \"draft\"\n", table: "Settings", comment: "Label in ProfileView.")"#,
+            #"String(localized: "profile.hello.label", defaultValue: "Hello \(user.name)", table: "Settings", comment: "Label in ProfileView.update(user:). %@ is user.name.")"#,
+            #"String(localized: "profile.savedDraft.label", defaultValue: "Saved \"draft\"\n", table: "Settings", comment: "Label in ProfileView.update(user:).")"#,
         ])
         _ = try Fixer(project: project).apply(plan, includeReview: true)
         let catalog = try StringCatalog.load(root.appendingPathComponent("App/Settings.xcstrings"))

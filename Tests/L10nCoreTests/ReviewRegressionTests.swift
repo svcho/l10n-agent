@@ -132,7 +132,7 @@ struct ReviewRegressionTests {
         #expect(feature.catalog == "Feature/Sources/Feat/Localizable.xcstrings")
         #expect(feature.replacement.contains("bundle: .module"))
         #expect(!app.replacement.contains("bundle: .module"))
-        let result = try Fixer(project: project).apply(plan)
+        let result = try Fixer(project: project).apply(plan, includeReview: true)
         #expect(result.catalogsChanged.contains("Feature/Sources/Feat/Localizable.xcstrings"))
         #expect(result.notes.contains { $0.contains("defaultLocalization") })
     }

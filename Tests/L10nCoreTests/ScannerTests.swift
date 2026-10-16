@@ -109,8 +109,10 @@ struct ScannerTests {
         let texts = scan("""
         import SwiftUI
         struct V: View { var body: some View { VStack { Text("•"); Text("\\(count)"); Text("—"); Text("A") } } }
-        """).map(\.displayText)
-        #expect(texts.isEmpty)
+        """)
+        #expect(texts.filter { $0.kind != .nonText }.isEmpty)
+        // Letterless literals are still extracted by Xcode; they are reported as non-text keys.
+        #expect(texts.filter { $0.kind == .nonText }.map(\.key) == ["•", "%lld", "—"])
     }
 
     @Test func customUserFacingAPIs() {

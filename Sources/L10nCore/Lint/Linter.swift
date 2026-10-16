@@ -50,12 +50,32 @@ struct Suppressions {
     }
 }
 
+/// Catalog keys a source file can resolve, per table, from the catalogs of its own target.
+struct FileKeys {
+    var keys: [String: Set<ByteKey>] = [:]
+    /// Keys marked "Don't translate" (`shouldTranslate: false`).
+    var doNotTranslate: [String: Set<ByteKey>] = [:]
+
+    func contains(_ key: String, table: String?) -> Bool {
+        keys[table ?? "Localizable"]?.contains(ByteKey(key)) ?? false
+    }
+}
+
 public struct Linter {
     public let project: Project
+    /// Declarations and references across all project files.
+    public let index: ProjectIndex
 
     public init(project: Project) {
-        self.project = project
+        self.init(project: project, index: ProjectIndex.build(files: project.swiftFiles))
     }
+
+    public init(project: Project, index: ProjectIndex) {
+        self.project = project
+        self.index = index
+    }
+
+    var scanner: SwiftScanner { SwiftScanner(userFacing: project.config.userFacing, index: index) }
 
     func severity(_ rule: RuleInfo) -> Severity {
         project.config.rules[rule.id] ?? project.config.rules[rule.name] ?? (
@@ -116,7 +136,7 @@ public struct Linter {
 
     /// Scans Swift files and returns the string sites, honoring file filters and suppressions.
     public func scanSites(files: [String]? = nil) throws -> [StringSite] {
-        let scanner = SwiftScanner(userFacing: project.config.userFacing)
+        let scanner = self.scanner
         var sites: [StringSite] = []
         for url in selectedSwiftFiles(files) {
             let source = try String(contentsOf: url, encoding: .utf8)
@@ -135,34 +155,61 @@ public struct Linter {
     }
 
     func lintCode(catalogs: [StringCatalog], options: LintOptions) throws -> ([Diagnostic], Int) {
-        let scanner = SwiftScanner(userFacing: project.config.userFacing)
+        let scanner = self.scanner
         var diagnostics: [Diagnostic] = []
         let files = selectedSwiftFiles(options.files)
-        // Keys are compared by exact bytes, like Xcode does.
-        let keysByCatalog = Dictionary(catalogs.map { ($0.url.standardizedFileURL, Set($0.keys.map(ByteKey.init))) }, uniquingKeysWith: { first, _ in first })
+        let catalogIndex = CatalogKeyIndex(catalogs)
+        var scanned = 0
 
         for url in files {
             let source = try String(contentsOf: url, encoding: .utf8)
             let relative = project.relativePath(url)
+            if !SwiftScanner.isSkipped(path: relative, source: source) { scanned += 1 }
             let suppressions = Suppressions(source: source)
             let sites = scanner.scan(source: source, path: relative)
-            // Keys this file can resolve, per table, from the catalogs of its own target.
-            var keysByTable: [String: Set<ByteKey>] = [:]
-            for table in Set(sites.map { $0.table ?? "Localizable" }) {
-                keysByTable[table] = project.catalogURLs(forTable: table, file: url)
-                    .reduce(into: Set<ByteKey>()) { $0.formUnion(keysByCatalog[$1.standardizedFileURL] ?? []) }
-            }
+            let keys = fileKeys(for: url, sites: sites, catalogs: catalogIndex)
             for site in sites {
-                for diagnostic in codeDiagnostics(for: site, keysByTable: keysByTable, options: options)
+                for diagnostic in codeDiagnostics(for: site, keys: keys, options: options)
                 where !suppressions.suppresses(rule: diagnostic.rule, line: site.line) {
                     diagnostics.append(diagnostic)
                 }
             }
         }
-        return (diagnostics, files.count)
+        return (diagnostics, scanned)
     }
 
-    func codeDiagnostics(for site: StringSite, keysByTable: [String: Set<ByteKey>], options: LintOptions) -> [Diagnostic] {
+    /// Byte-exact key sets of loaded catalogs, by catalog URL.
+    struct CatalogKeyIndex {
+        var keys: [URL: Set<ByteKey>] = [:]
+        var doNotTranslate: [URL: Set<ByteKey>] = [:]
+
+        init(_ catalogs: [StringCatalog]) {
+            for catalog in catalogs {
+                let url = catalog.url.standardizedFileURL
+                guard keys[url] == nil else { continue }
+                keys[url] = Set(catalog.keys.map(ByteKey.init))
+                doNotTranslate[url] = Set(catalog.entries.filter { !$0.entry.shouldTranslate }.map { ByteKey($0.key) })
+            }
+        }
+    }
+
+    /// Keys this file can resolve, per table, from the catalogs of its own target.
+    func fileKeys(for url: URL, sites: [StringSite], catalogs: CatalogKeyIndex) -> FileKeys {
+        var result = FileKeys()
+        for table in Set(sites.map { $0.table ?? "Localizable" }).union(["Localizable"]) {
+            let urls = project.catalogURLs(forTable: table, file: url).map(\.standardizedFileURL)
+            result.keys[table] = urls.reduce(into: Set<ByteKey>()) { $0.formUnion(catalogs.keys[$1] ?? []) }
+            result.doNotTranslate[table] = urls.reduce(into: Set<ByteKey>()) { $0.formUnion(catalogs.doNotTranslate[$1] ?? []) }
+        }
+        return result
+    }
+
+    /// `com.example.queue`, `settings.title`: dotted identifiers are not prose.
+    static func looksLikeIdentifier(_ text: String) -> Bool {
+        text.wholeMatch(of: /[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+/) != nil
+    }
+
+    func codeDiagnostics(for site: StringSite, keys: FileKeys, options: LintOptions) -> [Diagnostic] {
         var result: [Diagnostic] = []
         func add(_ rule: RuleInfo, _ message: String, fixable: Bool) {
             guard enabled(rule, options) else { return }
@@ -172,13 +219,33 @@ public struct Linter {
 
         switch site.kind {
         case .unlocalized:
-            add(Rules.unlocalized, "\(quoted) is shown to users via \(site.api) but is not localized", fixable: site.fixable)
+            // Only semantic keys (`settings.title`) count: English text that Xcode extracted
+            // as a key elsewhere (`Text("Cancel")`) is still plain text here.
+            if !site.hasInterpolation, KeyPolicy.looksSemantic(site.staticText), keys.contains(site.staticText, table: site.table) {
+                // An existing key: a heuristic match is most likely a parameter that localizes
+                // it (`errorAlert(title: "content.error.title")`). At a known UI API the raw key
+                // would be shown, but rewriting it into a defaultValue would be wrong too.
+                if !site.heuristic {
+                    add(Rules.unlocalized, "\(quoted) is a catalog key but \(site.api) shows it as is; wrap it in String(localized:)", fixable: false)
+                }
+            } else if !site.hasInterpolation, Self.looksLikeIdentifier(site.staticText) {
+                break
+            } else {
+                add(Rules.unlocalized, "\(quoted) is shown to users via \(site.api) but is not localized", fixable: site.fixable)
+            }
+        case .nonText:
+            if let key = site.key {
+                let table = site.table ?? "Localizable"
+                if !(keys.doNotTranslate[table]?.contains(ByteKey(key)) ?? false) {
+                    add(Rules.nonTextLiteral, "\(quoted) has no text to translate but \(site.api) extracts it as a key; mark it Don't translate (fix) or use Text(verbatim:)", fixable: true)
+                }
+            }
         case .localizedText:
             add(Rules.textAsKey, "\(quoted) is localized with its English text as key (\(site.api)); use a semantic key", fixable: site.fixable)
         case .localizedKey:
             if let key = site.key, !site.hasDefaultValue {
                 let table = site.table ?? "Localizable"
-                if !(keysByTable[table]?.contains(ByteKey(key)) ?? false) {
+                if !keys.contains(key, table: table) {
                     add(Rules.missingKey, "Key \"\(key)\" is not defined in \(table).xcstrings", fixable: false)
                 }
             }
@@ -188,7 +255,7 @@ public struct Linter {
             add(Rules.concatenation, "\(quoted) uses String(format:); use String(localized:) with interpolation", fixable: false)
         }
 
-        if site.kind != .localizedKey, let plural = Self.pluralHint(site.segments) {
+        if site.kind != .localizedKey, site.kind != .nonText, let plural = Self.pluralHint(site.segments) {
             add(Rules.pluralCandidate, "\"\(plural)\" interpolates a count into text; add a plural variation in the catalog", fixable: false)
         }
         return result
@@ -235,11 +302,16 @@ public struct Linter {
             }
 
             var manualKeys: [String] = []
+            // Info.plist and App Shortcuts tables are referenced by the build, not by Swift code.
+            let checksReferences = !["InfoPlist", "AppShortcuts"].contains(catalog.tableName)
             for (key, entry) in catalog.entries {
                 if entry.isManual { manualKeys.append(key) }
                 if entry.isStale {
                     add(Rules.unusedKey, "Key \"\(key)\" is no longer referenced in code (extractionState: stale)", key: key)
                     continue
+                }
+                if entry.isManual, checksReferences, !isReferenced(key) {
+                    add(Rules.unusedKey, "Key \"\(key)\" is not referenced by any Swift file of the project; remove it, or list its prefix under keys.dynamicPrefixes if code builds it at runtime", key: key)
                 }
                 if entry.isManual, project.config.semanticKeys {
                     let violations = project.config.keys.violations(for: key)
@@ -250,10 +322,13 @@ public struct Linter {
                 guard entry.shouldTranslate else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: source)
                 let sourceText = sourceNode.leaves.first?.unit.value ?? key
-                guard sourceText.contains(where: \.isLetter) else { continue }
+                guard FormatSpecifier.hasText(sourceText) else { continue }
 
                 if entry.comment?.trimmingCharacters(in: .whitespaces).isEmpty ?? true {
                     add(Rules.missingComment, "Key \"\(key)\" has no comment for translators", key: key)
+                }
+                if sourceNode.variations.isEmpty, sourceNode.substitutions.isEmpty, let hint = Self.catalogPluralHint(sourceText) {
+                    add(Rules.catalogPluralCandidate, "Key \"\(key)\" counts something (\"\(hint)\"); add a plural variation (Vary by Plural) instead of one text for every count", key: key)
                 }
 
                 let currentFingerprint = FingerprintStore.sourceFingerprint(sourceNode)
@@ -301,12 +376,12 @@ public struct Linter {
                             guard let match = FormatParity.sourceLeaf(for: leaf.path, in: sourceNode),
                                   match.leaf.value.range(of: term, options: .caseInsensitive) != nil
                             else { return false }
-                            return leaf.unit.value.range(of: required, options: .caseInsensitive) == nil
+                            return !required.isUsed(in: leaf.unit.value)
                         }
                         if !violating.isEmpty {
                             let where_ = violating.map(\.label).filter { !$0.isEmpty }
                             let scope = where_.isEmpty ? "" : " (\(where_.joined(separator: ", ")))"
-                            add(Rules.glossary, "Translation \(locale) of \"\(key)\"\(scope) should use \"\(required)\" for \"\(term)\"", key: key, locales: [locale])
+                            add(Rules.glossary, "Translation \(locale) of \"\(key)\"\(scope) should use \(required.display) for \"\(term)\"", key: key, locales: [locale])
                         }
                     }
                 }
@@ -339,6 +414,36 @@ public struct Linter {
             }
         }
         return diagnostics
+    }
+
+    /// Whether any Swift file of the project uses `key`: as a complete literal, as the
+    /// generated symbol, under an interpolated literal prefix (`"settings.\(name)"`), or
+    /// under a configured dynamic prefix.
+    func isReferenced(_ key: String) -> Bool {
+        if index.literals.contains(ByteKey(key)) { return true }
+        if let symbol = SymbolNaming.bareName(for: key), index.identifiers.contains(symbol) { return true }
+        if project.config.keys.dynamicPrefixes.contains(where: { key.hasPrefix($0) }) { return true }
+        return index.literalPrefixes.contains { $0.count >= 3 && key.hasPrefix($0) }
+    }
+
+    /// `"%lld item(s)"`, `"%d accounts"`: a counted noun without plural variation.
+    static func catalogPluralHint(_ value: String) -> String? {
+        let tokens = FormatSpecifier.tokens(in: value)
+        let counts = tokens.filter {
+            if case .argument(_, let type) = $0.kind { return type == .integer || type == .unsigned }
+            return false
+        }
+        guard !counts.isEmpty else { return nil }
+        if let match = value.firstMatch(of: /\w+\((s|es|en|n|e)\)/) { return String(match.0) }
+        for token in counts {
+            let rest = value[token.range.upperBound...]
+            guard rest.first == " " else { continue }
+            let word = rest.dropFirst().prefix(while: \.isLetter)
+            if word.count > 2, word.hasSuffix("s"), !["ss", "us", "is", "os"].contains(where: { word.hasSuffix($0) }) {
+                return String(value[token.range.lowerBound..<word.endIndex])
+            }
+        }
+        return nil
     }
 
     /// Line of each key in the catalog file (Xcode formatting: `    "key" : {`).

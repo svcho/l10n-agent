@@ -10,7 +10,7 @@ public struct InitResult: Codable, Equatable, Sendable {
 public enum InitCommand {
     /// Writes `.l10n-agent.yml` with detected settings and records fingerprints for the
     /// existing translations so later source edits are detected.
-    public static func run(root: URL, model: String? = nil, force: Bool = false) async throws -> InitResult {
+    public static func run(root: URL, model: String? = nil, force: Bool = false, allowRemote: Bool = false) async throws -> InitResult {
         let project = try Project.discover(root: root)
         let configURL = project.root.appendingPathComponent(L10nConfig.fileName)
         var notes: [String] = []
@@ -27,6 +27,12 @@ public enum InitCommand {
             detectedModel = installed.first { !$0.isRemote }?.name
         }
 
+        var remoteModel = false
+        if needsConfig, let detectedModel {
+            remoteModel = await ChatModelFactory.isRemote(project.config.translator, model: detectedModel)
+        }
+        let keyPolicy = inferKeyPolicy(catalogs)
+
         // Every write below happens under one project lock.
         let baselined: Int = try ProjectLock.withLock(root: project.root) {
             if needsConfig {
@@ -34,9 +40,19 @@ public enum InitCommand {
                     sourceLanguage: project.sourceLanguage,
                     locales: locales,
                     catalog: unambiguousCatalog(project).map(project.relativePath),
-                    model: detectedModel
+                    model: detectedModel,
+                    allowRemote: allowRemote,
+                    keys: keyPolicy
                 ), to: configURL)
                 created = true
+                if remoteModel, allowRemote {
+                    notes.append("\(detectedModel ?? "The model") runs remotely: strings are sent off this machine. Wrote translator.allowRemote: true; every run also needs `export L10N_AGENT_ALLOW_REMOTE=1`.")
+                } else if remoteModel {
+                    notes.append("\(detectedModel ?? "The model") runs remotely, so translate refuses it. To send strings off this machine, re-run init with --allow-remote (or set translator.allowRemote: true) and export L10N_AGENT_ALLOW_REMOTE=1.")
+                }
+                if keyPolicy != KeyPolicy() {
+                    notes.append("Key style inferred from \(catalogs.flatMap(\.entries).filter { $0.entry.isManual }.count) existing manual keys: \(keyPolicy.style.rawValue), \(keyPolicy.minDepth)-\(keyPolicy.maxDepth) segments.")
+                }
                 if locales.isEmpty {
                     notes.append("No target locales detected. Add languages in Xcode (Project > Info > Localizations) or list them under `locales:`.")
                 }
@@ -66,7 +82,24 @@ public enum InitCommand {
         return nil
     }
 
-    static func configTemplate(sourceLanguage: String, locales: [String], catalog: String?, model: String?) -> String {
+    /// The key style and depth that fit most existing manual keys, so a project with an
+    /// established scheme does not start with hundreds of key-style warnings.
+    static func inferKeyPolicy(_ catalogs: [StringCatalog]) -> KeyPolicy {
+        var policy = KeyPolicy()
+        let keys = catalogs.flatMap(\.entries).filter { $0.entry.isManual }.map(\.key)
+        guard keys.count >= 5 else { return policy }
+        let fitting = KeyStyle.allCases.map { style in (style, keys.filter(style.matches).count) }
+        // Prefer the default style unless another one fits clearly more keys.
+        let camel = fitting.first { $0.0 == .dottedCamel }!.1
+        if let best = fitting.max(by: { $0.1 < $1.1 }), best.1 > camel { policy.style = best.0 }
+        let depths = keys.map { $0.split(separator: ".", omittingEmptySubsequences: false).count }.sorted()
+        // Existing keys are approved: cover all of them, never below the defaults.
+        policy.maxDepth = max(policy.maxDepth, min(depths.last ?? policy.maxDepth, 10))
+        policy.minDepth = min(policy.minDepth, max(1, depths.first ?? policy.minDepth))
+        return policy
+    }
+
+    static func configTemplate(sourceLanguage: String, locales: [String], catalog: String?, model: String?, allowRemote: Bool = false, keys: KeyPolicy = KeyPolicy()) -> String {
         func yamlList(_ values: [String]) -> String {
             values.isEmpty ? "[]" : "[" + values.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
         }
@@ -81,20 +114,22 @@ public enum InitCommand {
         # Report English-text keys such as Text("Welcome") and propose semantic keys.
         semanticKeys: true
         keys:
-          style: dotted.camel        # dotted.camel | dotted.lower | dotted.snake
-          minDepth: 2
-          maxDepth: 4
+          style: \(keys.style.rawValue)        # dotted.camel | dotted.lower | dotted.snake
+          minDepth: \(keys.minDepth)
+          maxDepth: \(keys.maxDepth)
           scopes: []                 # allowed first segments, e.g. [onboarding, settings, common]
           forbiddenPrefixes: ["tmp.", "debug.", "test."]
+          dynamicPrefixes: []        # keys built at runtime, e.g. ["onboarding.step"]; never reported unused
         exclude: ["**/Tests/**", "**/Preview Content/**"]
         rules: {}                    # e.g. { L10N105: off, L10N101: error }
-        glossary: {}                 # e.g. { "Acme Cloud": { de: "Acme Cloud", ja: "Acme Cloud" } }
+        glossary: {}                 # e.g. { "Acme Cloud": { de: "Acme Cloud" }, account: { de: [Konto, Konten] } }
         translator:
           provider: ollama           # ollama | openai (LM Studio, llama.cpp, vLLM)
           baseURL: http://localhost:11434
           \(model.map { "model: \"\($0)\"" } ?? "# model: qwen3")
           batchSize: 20
-          allowRemote: false         # remote endpoints also need L10N_AGENT_ALLOW_REMOTE=1
+          allowRemote: \(allowRemote)          # remote endpoints and :cloud models also need L10N_AGENT_ALLOW_REMOTE=1
+          instructions: {}           # style guide for the model, e.g. { de: "Use informal du." }
 
         """
     }

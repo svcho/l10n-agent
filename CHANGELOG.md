@@ -8,7 +8,7 @@ Rewrite in Swift, Apple platforms only. The String Catalog (`.xcstrings`) is now
 
 ### New
 
-- `lint`: SwiftSyntax scanner for unlocalized UI text (L10N001), English-text keys (L10N002), concatenation and `String(format:)` (L10N003), missing keys (L10N004) and plural candidates (L10N005), plus catalog rules L10N100-L10N111. Output as text, Xcode build-phase diagnostics, JSON or SARIF. Inline `// l10n-agent:ignore` suppressions.
+- `lint`: SwiftSyntax scanner for unlocalized UI text (L10N001), English-text keys (L10N002), concatenation and `String(format:)` (L10N003), missing keys (L10N004), plural candidates (L10N005) and letterless extracted literals (L10N006), plus catalog rules L10N100-L10N112. Output as text, Xcode build-phase diagnostics, JSON or SARIF. Inline `// l10n-agent:ignore` suppressions.
 - `fix`: plans and applies code + catalog fixes with semantic keys and translator comments. Uses Xcode 26 generated symbols (`Text(.key)`, table namespaces) or `String(localized:defaultValue:comment:)`. Migrates existing translations from English-text keys. Plans can be saved, edited and re-applied; apply refuses when files changed. `--llm-keys` asks the local model for key names.
 - `translate`: batched translation through Ollama or OpenAI-compatible local servers, with placeholder masking, positional reordering, CLDR plural categories, substitutions, glossary enforcement, retries with feedback, and `needs_review` output. Remote endpoints and cloud models are refused unless explicitly allowed.
 - `status`, `doctor`, `init`, `accept`, `rules`.
@@ -24,6 +24,36 @@ Rewrite in Swift, Apple platforms only. The String Catalog (`.xcstrings`) is now
 - Paths are confined to the project root through symlinks. Provided translations must target configured locales. Remote translators need an environment opt-in.
 - Full CLDR plural-category table plus a `pluralCategories` override; unknown languages are reported instead of assumed to be `one/other`. Device variations count toward completeness. L10N004 and named-table fixes are scoped to the file's own target, and new tables keep their name. Glossary checks cover every variation. Unknown plural rules are reported even when an `other` form exists. Glossary validation during translation compares each plural form with its own source form. `translate --catalog` keeps the project-wide locale set. Provided translations must name the catalog when a key is ambiguous. English-text keys stay live while other code still uses them. Symbol rewrites are decided per project and target. Apply validates state before writing sources. `init` writes under a single lock. `%*d` widths count as arguments. Only debug-only `#if` branches are skipped. Sibling resource catalogs resolve through the owning Xcode project. L10N110 is limited to symbol-generating targets. Provided plural forms can fill categories next to approved ones. `% d` is recognized. The secret scan checks staged blobs. Fix-time symbol checks are per file. Plural forms are validated against their own source form. Non-JSON numbers are rejected. Typed `LocalizedStringResource` declarations get type-correct rewrites. Key lookups, fingerprints and `--key` filters are byte-exact. `init` pins `catalog:` only when unambiguous. Blank catalogs are reported. Migrations merge missing variation leaves. Approved substitution forms no longer block the root string. `init` stops on malformed catalogs before writing. Provided forms keep the staleness of approved neighbors. Fix planning tracks keys byte-exactly. The secret scan can no longer be fooled by SIGPIPE. `init` leaves `locales` unset when none are detected. Sibling catalogs in a shared project resolve per target. Malformed fingerprint stores are rejected. Symlinks leaving the project are ignored during discovery. Migrations keep source-language variations. `l10n_add_keys` requires a catalog when ambiguous. New `catalogRoutes` config for split Sources/Resources layouts. Translation groups are byte-exact. Concatenations inside calls with other arguments are not rewritten. Colocated Xcode projects no longer decide symbol generation arbitrarily. Language-specific plural/device variations count as complete. Substitution metadata is part of fingerprints and L10N104. The secret scan also reads binary files. `fix --apply`, `translate` saves and `l10n_add_keys` are transactional: catalogs (and fingerprints) are written together, before code, and any failed write rolls everything back. Non-literal `table:`/`comment:` arguments block whole-call rewrites.
 - Translation requests use per-request item ids, retry one item at a time, detect shifted answers, reject plural forms that hard-code the count, and repair broken machine translations.
+
+### From the first real-repo trial (pangi: iOS, watchOS, macOS, widgets, AutoFill; 692 keys)
+
+- **Fix correctness.** A key passed to a function the project declares with a `LocalizedStringKey`/`LocalizedStringResource` parameter is treated as a lookup and never rewritten into a `defaultValue` that would not compile. Existing keys shown as is at a known UI API are reported as raw keys.
+- **Fewer false positives.** L10N001 hits on pangi went from 161 to 3, all real.
+  - Queue, lock and log names (`DispatchQueue(label:)`) and dotted identifiers are ignored.
+  - Properties used only in logging calls are ignored.
+  - Generated files are skipped.
+  - Text found only by a label or name needs review before it is fixed.
+- **Better fixes.**
+  - Placeholder specifiers come from declared types (`UInt32` → `%u`).
+  - New keys follow the keys the type already uses, or the catalog's dominant prefix.
+  - Comments name the member.
+  - Previews of edited plans show exactly what apply writes.
+- **Configuration.**
+  - `codeStyle: auto` ignores unit and UI test bundles, and `doctor` names the configurations that turn symbols off.
+  - `doctor` says when a translator is remote.
+  - `init` infers the key style and depth from existing keys, notes cloud models, and takes `--allow-remote`.
+  - `translate --dry-run` warns when a real run would be refused.
+  - Key segments after the first may start with a digit.
+  - Glossary terms may list several forms (`de: [Konto, Konten]`).
+  - New `translator.instructions` for style guidance such as formality.
+- **New features.**
+  - `l10n-agent migrate` (and MCP `l10n_migrate_strings`) converts `.strings`/`.stringsdict` to String Catalogs. It was verified on pangi's 692 English and 692 German values with nothing lost.
+  - `l10n-agent set-translation`.
+  - `status --fail-under`. `lint` now fails on warnings by default.
+  - L10N006 marks letterless extracted literals *Don't translate*, and `l10n_add_keys` accepts `shouldTranslate: false`.
+  - L10N106 reports unused manual keys (`keys.dynamicPrefixes` for runtime keys).
+  - L10N112 suggests plural variations from catalog values.
+  - `NSError` `userInfo` messages are detected.
 
 ### Removed
 

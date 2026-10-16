@@ -108,6 +108,14 @@ public enum FormatSpecifier {
         return tokens
     }
 
+    /// Whether a value has words to translate once its format specifiers are removed
+    /// (`"%lld"` and `"%@ · %@"` do not).
+    public static func hasText(_ string: String) -> Bool {
+        var text = string
+        for token in tokens(in: string).reversed() { text.removeSubrange(token.range) }
+        return text.contains(where: \.isLetter)
+    }
+
     /// Argument signature keyed by argument index. Repeated uses of the same index collapse.
     public static func argumentSignature(of string: String) -> [Int: FormatToken.ArgumentType] {
         var signature: [Int: FormatToken.ArgumentType] = [:]
