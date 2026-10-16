@@ -51,6 +51,8 @@ public enum MigrateCommand {
 
         var catalogs: [String: StringCatalog] = [:]
         var fingerprints = try FingerprintStore.load(root: project.root)
+        let codeSites = try Linter(project: project).scanSites()
+        let titleWords = ["Localizable", ".strings", "copyright", "©", "license", "all rights reserved", LanguageNames.displayName(source)]
         var migratedFiles: [URL] = []
         var conflictingFiles: Set<URL> = []
 
@@ -72,7 +74,7 @@ public enum MigrateCommand {
             var failure: String?
             for file in group.files {
                 do {
-                    parsed.append((file, try file.kind == .strings ? StringsFile.parse(Data(contentsOf: file.url)) : StringsDictFile.parse(Data(contentsOf: file.url))))
+                    parsed.append((file, try file.kind == .strings ? StringsFile.parse(Data(contentsOf: file.url), titleWords: titleWords + [LanguageNames.displayName(file.locale)]) : StringsDictFile.parse(Data(contentsOf: file.url))))
                 } catch {
                     failure = "\(project.relativePath(file.url)): \(error)"
                     break
@@ -88,6 +90,7 @@ public enum MigrateCommand {
             let original = try catalogs[catalogPath] ?? (exists ? StringCatalog.load(catalogURL, fallbackSourceLanguage: source) : nil)
             var catalog = original ?? StringCatalog.empty(url: catalogURL, sourceLanguage: source)
             var table = MigratedTable(catalog: catalogPath, sources: [], keys: 0, locales: [], created: !exists, conflicts: [])
+            let codeComments = codeCommentsFor(group: group, sites: codeSites, project: project)
             var keys: Set<ByteKey> = []
             // key → locales this migration wrote, and the legacy source each translation was made from.
             var written: [ByteKey: Set<String>] = [:]
@@ -111,7 +114,10 @@ public enum MigrateCommand {
                         // keys stay extracted so Xcode keeps managing them from code.
                         entry.extractionState = "manual"
                     }
-                    if entry.comment == nil, let comment = legacy.comment, locale == source {
+                    // Comments: the one above the entry, else the code's `comment:`, else the
+                    // comment heading its block, else its section.
+                    if entry.comment == nil, locale == source,
+                       let comment = legacy.comment ?? codeComments[ByteKey(legacy.key)] ?? legacy.blockComment ?? legacy.sectionComment {
                         entry.comment = comment
                     }
                     if locale == source { legacySource[ByteKey(legacy.key)] = legacy.node }
@@ -129,6 +135,12 @@ public enum MigrateCommand {
                 migratedFiles.append(file.url)
             }
             table.sources.sort()
+            for key in keys {
+                if var entry = catalog.entry(key.string), entry.comment == nil, let comment = codeComments[key] {
+                    entry.comment = comment
+                    catalog.setEntry(key.string, entry)
+                }
+            }
             // Keys that only exist in other locales still need a source value.
             for key in keys {
                 guard var entry = catalog.entry(key.string), entry.localization(source) == nil else { continue }
@@ -208,6 +220,26 @@ public enum MigrateCommand {
                 }
             }
             result.removed.sort()
+        }
+        return result
+    }
+
+    /// `comment:` arguments of the table's localization calls, by key, from the code of the
+    /// group's target: files under the folder that holds the `.lproj` folders, else (split
+    /// Sources/Resources layouts) every file. Different comments are joined with "; ".
+    static func codeCommentsFor(group: TableGroup, sites: [StringSite], project: Project) -> [ByteKey: String] {
+        let folder = group.folder.standardizedFileURL.path + "/"
+        let relevant = sites.filter { ($0.table ?? "Localizable") == group.table && $0.codeComment != nil && $0.key != nil }
+        let hasLocalCode = project.swiftFiles.contains { $0.standardizedFileURL.path.hasPrefix(folder) }
+        let used = hasLocalCode ? relevant.filter { project.root.appendingPathComponent($0.file).standardizedFileURL.path.hasPrefix(folder) } : relevant
+        var result: [ByteKey: String] = [:]
+        for site in used {
+            guard let key = site.key, let comment = site.codeComment else { continue }
+            if let existing = result[ByteKey(key)] {
+                if !existing.components(separatedBy: "; ").contains(comment) { result[ByteKey(key)] = existing + "; " + comment }
+            } else {
+                result[ByteKey(key)] = comment
+            }
         }
         return result
     }
@@ -298,7 +330,12 @@ public enum MigrateCommand {
 struct LegacyEntry: Equatable {
     var key: String
     var node: LocalizationNode
+    /// The comment directly above the entry.
     var comment: String?
+    /// The comment directly above an earlier entry of the same block (no blank line between).
+    var blockComment: String?
+    /// The section comment (followed by a blank line) the entry is under.
+    var sectionComment: String?
 }
 
 /// Parser for the old-style property list format of `.strings` files, keeping order and
@@ -328,13 +365,25 @@ enum StringsFile {
         throw ParseError(description: "the file is neither UTF-8 nor UTF-16")
     }
 
-    static func parse(_ data: Data) throws -> [LegacyEntry] {
+    /// `titleWords` mark a leading file-title comment ("pangiMac — English") that is not a section.
+    static func parse(_ data: Data, titleWords: [String] = []) throws -> [LegacyEntry] {
         let text = try decode(data)
         let scalars = Array(text.unicodeScalars)
         var index = 0
         var entries: [LegacyEntry] = []
         var pendingComment: String?
         var newlinesSinceComment = 0
+        // Comments since the previous entry, each with whether a blank line followed it.
+        var comments: [(text: String, blankAfter: Bool)] = []
+        var sectionComment: String?
+        // A comment directly above an entry also heads the entries that follow it without a
+        // blank line (`// Custom icon picker` above a group of keys).
+        var blockComment: String?
+        var newlinesSinceEntry = 0
+        func closeComment() {
+            if let pending = pendingComment { comments.append((pending, newlinesSinceComment > 1)) }
+            pendingComment = nil
+        }
 
         func fail(_ message: String) -> ParseError {
             let line = scalars[0..<min(index, scalars.count)].filter { $0 == "\n" }.count + 1
@@ -345,10 +394,12 @@ enum StringsFile {
                 let scalar = scalars[index]
                 if scalar == "\n" {
                     newlinesSinceComment += 1
+                    newlinesSinceEntry += 1
                     index += 1
                 } else if scalar.properties.isWhitespace {
                     index += 1
                 } else if scalar == "/", index + 1 < scalars.count, scalars[index + 1] == "*" {
+                    if pendingComment != nil { closeComment() }
                     let start = index + 2
                     index = start
                     while index + 1 < scalars.count, !(scalars[index] == "*" && scalars[index + 1] == "/") { index += 1 }
@@ -357,6 +408,7 @@ enum StringsFile {
                     newlinesSinceComment = 0
                     index += 2
                 } else if scalar == "/", index + 1 < scalars.count, scalars[index + 1] == "/" {
+                    if pendingComment != nil { closeComment() }
                     let start = index + 2
                     index = start
                     while index < scalars.count, scalars[index] != "\n" { index += 1 }
@@ -438,9 +490,24 @@ enum StringsFile {
         while true {
             try skipTrivia()
             guard index < scalars.count else { break }
-            // The comment belongs to this entry only when no blank line separates them.
-            let comment = newlinesSinceComment <= 1 ? pendingComment.flatMap(cleanComment) : nil
+            // The comment belongs to this entry only when no blank line separates them; a
+            // comment followed by a blank line heads a section of entries.
+            if pendingComment != nil { closeComment() }
+            let direct = comments.last.flatMap { $0.blankAfter ? nil : cleanComment($0.text) }
+            if !comments.isEmpty || newlinesSinceEntry > 1 { blockComment = nil }
+            let inheritedBlock = blockComment
+            if let direct { blockComment = direct }
+            var sections = comments.filter(\.blankAfter).map(\.text)
+            if entries.isEmpty, let first = sections.first {
+                // A file's leading comment is a title or header, not a section, when it names
+                // the file or language or is a copyright/license notice.
+                let lower = first.lowercased()
+                if titleWords.contains(where: { lower.contains($0.lowercased()) }) { sections.removeFirst() }
+            }
+            if let section = sections.last.flatMap(cleanComment) { sectionComment = section }
             pendingComment = nil
+            comments = []
+            newlinesSinceEntry = 0
             let key = try readString()
             try skipTrivia()
             var value = key
@@ -453,10 +520,10 @@ enum StringsFile {
             guard index < scalars.count, scalars[index] == ";" else { throw fail("expected \";\" after \"\(key)\"") }
             index += 1
             values[key] = value
-            let entry = LegacyEntry(key: key, node: LocalizationNode(unit: StringUnit(state: StringUnit.State.translated, value: value)), comment: comment)
+            let entry = LegacyEntry(key: key, node: LocalizationNode(unit: StringUnit(state: StringUnit.State.translated, value: value)), comment: direct, blockComment: inheritedBlock, sectionComment: sectionComment)
             // A repeated key: the last value wins, as in Foundation.
             if let existing = entries.firstIndex(where: { $0.key.utf8.elementsEqual(key.utf8) }) {
-                entries[existing] = LegacyEntry(key: key, node: entry.node, comment: entry.comment ?? entries[existing].comment)
+                entries[existing] = LegacyEntry(key: key, node: entry.node, comment: entry.comment ?? entries[existing].comment, blockComment: entry.blockComment, sectionComment: entry.sectionComment)
             } else {
                 entries.append(entry)
             }
@@ -498,7 +565,7 @@ enum StringsDictFile {
             guard let rule = plist[key] as? [String: Any], let format = rule["NSStringLocalizedFormatKey"] as? String else {
                 throw StringsFile.ParseError(description: "\(key) has no NSStringLocalizedFormatKey")
             }
-            entries.append(LegacyEntry(key: key, node: try node(format: format, rule: rule, key: key), comment: nil))
+            entries.append(LegacyEntry(key: key, node: try node(format: format, rule: rule, key: key), comment: nil, blockComment: nil, sectionComment: nil))
         }
         return entries
     }

@@ -3,7 +3,7 @@ import Foundation
 import L10nCore
 import L10nMCP
 
-let version = "0.4.0"
+let version = "0.5.0"
 
 struct GlobalOptions: ParsableArguments {
     @Option(name: .long, help: "Project root (folder containing your .xcodeproj or Package.swift).")
@@ -49,7 +49,7 @@ struct L10nAgent: AsyncParsableCommand {
           l10n-agent translate            # fill translations with a local LLM (needs_review)
         """,
         version: version,
-        subcommands: [Lint.self, Fix.self, Translate.self, SetTranslation.self, Status.self, Accept.self, Doctor.self, Init.self, Migrate.self, ListRules.self, MCP.self]
+        subcommands: [Lint.self, Fix.self, Translate.self, SetTranslation.self, Status.self, Accept.self, Doctor.self, Init.self, Migrate.self, Keys.self, ListRules.self, MCP.self]
     )
 }
 
@@ -228,6 +228,7 @@ struct SetTranslation: AsyncParsableCommand {
     @Option(parsing: .singleValue, help: "A plural form as category=text; repeat for each category.") var form: [String] = []
     @Option(help: "Catalog path, when the key exists in several catalogs.") var catalog: String?
     @Option(help: "JSON file with a list of translations.") var file: String?
+    @Flag(help: "Replace an approved plain translation (for a broken value); the result needs review again.") var replaceApproved = false
     @Option(help: "Output format: text or json.") var format: OutputFormat = .text
 
     func run() async throws {
@@ -246,7 +247,7 @@ struct SetTranslation: AsyncParsableCommand {
                 provided.append(try ProvidedTranslation.fromOptions(key: key, locale: locale, value: value, forms: form, catalog: catalog))
             }
             guard !provided.isEmpty else { throw L10nError.config("pass --key/--locale/--value or --file") }
-            let report = try TranslationEngine(project: try global.project()).applyProvided(provided)
+            let report = try TranslationEngine(project: try global.project()).applyProvided(provided, replaceApproved: replaceApproved)
             print(format == .json ? JSONOutput.encode(report) : TranslateText.render(report))
             return report.failed.isEmpty ? 0 : ExitCodes.findings
         }
@@ -266,7 +267,15 @@ struct Status: AsyncParsableCommand {
             print(format == .json ? JSONOutput.encode(report) : StatusCommand.text(report))
             guard let failUnder else { return 0 }
             let below = StatusCommand.below(report, percent: failUnder, approvedOnly: approvedOnly)
-            for line in below { FileHandle.standardError.write(Data("below \(failUnder)%: \(line)\n".utf8)) }
+            // After the table, on stdout, so hooks that capture the output show what failed.
+            if !below.isEmpty {
+                if format == .json {
+                    for line in below { FileHandle.standardError.write(Data("below \(failUnder)%: \(line)\n".utf8)) }
+                } else {
+                    print("")
+                    for line in below { print("below \(failUnder)%: \(line)") }
+                }
+            }
             return below.isEmpty ? 0 : ExitCodes.findings
         }
     }
@@ -356,6 +365,69 @@ struct Migrate: AsyncParsableCommand {
             for note in result.notes { print("note: \(note)") }
             if !apply, !result.tables.isEmpty { print("\nRun again with --apply to write the catalogs (add --remove-legacy to delete the old files).") }
             return result.failed.isEmpty ? 0 : ExitCodes.findings
+        }
+    }
+}
+
+struct Keys: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Remove or rename catalog keys (with their translations and fingerprints).",
+        subcommands: [RemoveKeys.self, RenameKey.self]
+    )
+}
+
+enum KeyChangeText {
+    static func render(_ result: KeyChangeResult) -> String {
+        var lines: [String] = []
+        for key in result.removed { lines.append("removed \(key)") }
+        for (old, new) in result.renamed.sorted(by: { $0.key < $1.key }) { lines.append("renamed \(old) -> \(new)") }
+        for path in result.catalogsChanged { lines.append("  updated \(path)") }
+        for path in result.filesChanged { lines.append("  changed \(path)") }
+        for (key, reason) in result.rejected.sorted(by: { $0.key < $1.key }) { lines.append("not changed \(key): \(reason)") }
+        for note in result.notes { lines.append("note: \(note)") }
+        return lines.isEmpty ? "Nothing changed." : lines.joined(separator: "\n")
+    }
+}
+
+struct RemoveKeys: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remove",
+        abstract: "Remove unused keys (L10N106) and all their translations.",
+        discussion: "Keys still referenced by Swift code of the catalog's target are refused unless --force is given."
+    )
+    @OptionGroup var global: GlobalOptions
+    @Argument(help: "Keys to remove.") var keys: [String]
+    @Option(help: "Catalog path, when a key exists in several catalogs.") var catalog: String?
+    @Flag(help: "Also remove keys that code still references.") var force = false
+    @Option(help: "Output format: text or json.") var format: OutputFormat = .text
+
+    func run() async throws {
+        try await execute {
+            let result = try KeysCommand.remove(project: try global.project(), keys: keys, catalog: catalog, force: force)
+            print(format == .json ? JSONOutput.encode(result) : KeyChangeText.render(result))
+            return result.rejected.isEmpty ? 0 : ExitCodes.findings
+        }
+    }
+}
+
+struct RenameKey: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "rename",
+        abstract: "Rename a key, keeping its translations, review states and fingerprints.",
+        discussion: "With --update-code, string literals equal to the old key and its generated symbol (.oldKey) are rewritten in the Swift files that use the catalog."
+    )
+    @OptionGroup var global: GlobalOptions
+    @Argument(help: "Current key.") var old: String
+    @Argument(help: "New key.") var new: String
+    @Option(help: "Catalog path, when the key exists in several catalogs.") var catalog: String?
+    @Flag(help: "Rewrite references in Swift code too.") var updateCode = false
+    @Option(help: "Output format: text or json.") var format: OutputFormat = .text
+
+    func run() async throws {
+        try await execute {
+            let result = try KeysCommand.rename(project: try global.project(), from: old, to: new, catalog: catalog, updateCode: updateCode)
+            print(format == .json ? JSONOutput.encode(result) : KeyChangeText.render(result))
+            return result.rejected.isEmpty ? 0 : ExitCodes.findings
         }
     }
 }

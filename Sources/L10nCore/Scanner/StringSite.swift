@@ -43,7 +43,7 @@ public enum ReplacementContext: String, Equatable, Sendable, Codable {
     case nsLocalizedCall
 }
 
-public struct ByteRange: Equatable, Sendable, Codable {
+public struct ByteRange: Hashable, Sendable, Codable {
     public var start: Int
     public var end: Int
 
@@ -86,6 +86,9 @@ public struct StringSite: Equatable, Sendable, Codable {
     public var typeHints: [String?] = []
     /// The function or property the literal is in, e.g. `keyLabel(for:)` or `title`.
     public var enclosingMember: String?
+    /// The bytes between the quotes of a plain single-line literal without interpolation;
+    /// `nil` for raw, multiline or interpolated literals and concatenations.
+    public var literalContentRange: ByteRange?
 
     public var fixable: Bool { unfixableReason == nil }
 

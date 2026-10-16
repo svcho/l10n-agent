@@ -19,19 +19,32 @@ public struct ProjectIndex: Sendable, Equatable {
     public var literalPrefixes: Set<String> = []
     /// Every identifier used in an expression (decl references and member names).
     public var identifiers: Set<String> = []
+    /// The same literal, prefix and identifier sets per file (standardized path), so key
+    /// usage can be checked for the files of one target.
+    public var files: [String: References] = [:]
+
+    public struct References: Sendable, Equatable {
+        public var literals: Set<ByteKey> = []
+        public var literalPrefixes: Set<String> = []
+        public var identifiers: Set<String> = []
+    }
 
     public init() {}
 
     public static func build(files: [URL]) -> ProjectIndex {
-        build(sources: files.compactMap { try? String(contentsOf: $0, encoding: .utf8) })
+        build(named: files.compactMap { url in (try? String(contentsOf: url, encoding: .utf8)).map { (url.standardizedFileURL.path, $0) } })
     }
 
     /// Builds an index from in-memory sources.
     public static func build(sources: [String]) -> ProjectIndex {
+        build(named: sources.enumerated().map { ("source\($0.offset)", $0.element) })
+    }
+
+    static func build(named sources: [(path: String, source: String)]) -> ProjectIndex {
         var index = ProjectIndex()
         var references: [String: (total: Int, logging: Int)] = [:]
         var parameters: [String: [String: String]] = [:]
-        for source in sources { index.add(source: source, references: &references, parameters: &parameters) }
+        for (path, source) in sources { index.add(source: source, path: path, references: &references, parameters: &parameters) }
         index.logOnlyNames = Set(references.compactMap { name, counts in
             counts.total > 0 && counts.total == counts.logging ? name : nil
         })
@@ -52,7 +65,7 @@ public struct ProjectIndex: Sendable, Equatable {
         }
     }
 
-    private mutating func add(source: String, references: inout [String: (total: Int, logging: Int)], parameters: inout [String: [String: String]]) {
+    private mutating func add(source: String, path: String, references: inout [String: (total: Int, logging: Int)], parameters: inout [String: [String: String]]) {
         let visitor = IndexVisitor()
         visitor.walk(Parser.parse(source: source))
         for (name, labels) in visitor.parameters {
@@ -61,6 +74,7 @@ public struct ProjectIndex: Sendable, Equatable {
         literals.formUnion(visitor.literals)
         literalPrefixes.formUnion(visitor.literalPrefixes)
         identifiers.formUnion(visitor.identifiers)
+        files[path] = References(literals: visitor.literals, literalPrefixes: visitor.literalPrefixes, identifiers: visitor.identifiers)
         for (name, counts) in visitor.references {
             let existing = references[name] ?? (0, 0)
             references[name] = (existing.total + counts.total, existing.logging + counts.logging)

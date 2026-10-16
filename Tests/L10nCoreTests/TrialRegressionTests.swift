@@ -454,7 +454,7 @@ struct TrialRegressionTests {
         let title = try #require(catalog.entry("settings.title"))
         #expect(title.isManual && title.comment == "Title of the settings screen.")
         #expect(title.localization("de")?.stringUnit == StringUnit(state: "translated", value: "Einstellungen"))
-        #expect(catalog.entry("settings.escapes")?.comment == nil, "a blank line separates the section comment")
+        #expect(catalog.entry("settings.escapes")?.comment == "Section header, not the next entry's comment", "entries under a section comment get it")
         #expect(catalog.entry("settings.escapes")?.localization("en")?.stringUnit?.value == "Tab\there \"quoted\" é line\nbreak")
         #expect(catalog.entry("unquoted.key")?.localization("de")?.stringUnit?.value == "Einfach")
         #expect(catalog.entry("settings.only.en")?.localization("de") == nil)

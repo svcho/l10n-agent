@@ -13,6 +13,9 @@ public struct XcodeSettings: Equatable, Sendable {
     /// Per `.xcodeproj`: the build configurations (`Target/Debug`) that set
     /// `STRING_CATALOG_GENERATE_SYMBOLS = NO`. Unit and UI test bundles are ignored.
     public var symbolsDisabledIn: [String: [String]] = [:]
+    /// Folders that only unit or UI test targets compile (synchronized folders in the pbxproj).
+    /// Their files are skipped like test files, even without `import XCTest`.
+    public var testFolders: [URL] = []
 
     public enum SymbolGeneration: String, Equatable, Sendable {
         case enabled
@@ -53,12 +56,69 @@ public struct XcodeSettings: Equatable, Sendable {
             if settings.developmentRegion == nil, let match = text.firstMatch(of: /developmentRegion\s*=\s*"?([A-Za-z0-9_-]+)"?\s*;/) {
                 settings.developmentRegion = String(match.1)
             }
+            settings.testFolders += testFolders(pbxproj: text, projectDirectory: project.deletingLastPathComponent())
             let (enabled, disabled) = symbolSettings(pbxproj: text)
             settings.symbolGeneration[project.path] = !enabled.isEmpty ? (!disabled.isEmpty ? .mixed : .enabled) : .disabled
             if !disabled.isEmpty { settings.symbolsDisabledIn[project.path] = disabled }
         }
         settings.knownRegions = regions
         return settings
+    }
+
+    /// Synchronized folders (`PBXFileSystemSynchronizedRootGroup`) that belong only to unit
+    /// or UI test targets. Paths are resolved through parent groups and `sourceTree`. A folder
+    /// is left out when an app target also compiles it, overlaps it, or claims some of its
+    /// files through a build-file exception set.
+    static func testFolders(pbxproj text: String, projectDirectory: URL) -> [URL] {
+        guard let plist = try? PropertyListSerialization.propertyList(from: Data(text.utf8), format: nil) as? [String: Any],
+              let objects = plist["objects"] as? [String: [String: Any]]
+        else { return [] }
+        var parent: [String: String] = [:]
+        for (id, object) in objects {
+            for child in object["children"] as? [String] ?? [] { parent[child] = id }
+        }
+        var resolving: Set<String> = []
+        func resolve(_ id: String) -> URL? {
+            guard let object = objects[id], resolving.insert(id).inserted else { return nil }
+            defer { resolving.remove(id) }
+            let path = object["path"] as? String
+            switch object["sourceTree"] as? String ?? "<group>" {
+            case "<absolute>":
+                return path.map { URL(fileURLWithPath: $0).standardizedFileURL }
+            case "SOURCE_ROOT":
+                return (path.map { projectDirectory.appendingPathComponent($0) } ?? projectDirectory).standardizedFileURL
+            case "<group>":
+                let base = parent[id].flatMap(resolve) ?? projectDirectory
+                return (path.map { base.appendingPathComponent($0) } ?? base).standardizedFileURL
+            default:
+                return nil
+            }
+        }
+        var testTargets: Set<String> = []
+        var testGroups: Set<String> = []
+        var appGroups: Set<String> = []
+        for (id, object) in objects where object["isa"] as? String == "PBXNativeTarget" {
+            let productType = object["productType"] as? String ?? ""
+            let isTest = productType.contains("unit-test") || productType.contains("ui-testing")
+            if isTest { testTargets.insert(id) }
+            for group in object["fileSystemSynchronizedGroups"] as? [String] ?? [] {
+                if isTest { testGroups.insert(group) } else { appGroups.insert(group) }
+            }
+        }
+        // Exception sets of a test folder that add files to an app target.
+        func sharedWithApp(_ group: String) -> Bool {
+            (objects[group]?["exceptions"] as? [String] ?? []).contains { exception in
+                guard let target = objects[exception]?["target"] as? String else { return false }
+                return !testTargets.contains(target)
+            }
+        }
+        let appFolders = appGroups.compactMap(resolve).map(\.path)
+        return testGroups.subtracting(appGroups).sorted().compactMap { id -> URL? in
+            guard !sharedWithApp(id), let folder = resolve(id) else { return nil }
+            let path = folder.path
+            let overlaps = appFolders.contains { app in app == path || app.hasPrefix(path + "/") || path.hasPrefix(app + "/") }
+            return overlaps ? nil : folder
+        }
     }
 
     /// Build configurations that set `STRING_CATALOG_GENERATE_SYMBOLS` to YES and to NO,
@@ -176,6 +236,12 @@ public struct Project: Sendable {
             swiftFiles: swiftFiles.sorted(by: sortByPath),
             xcode: XcodeSettings.read(projects: projects.sorted(by: sortByPath))
         )
+    }
+
+    /// Files of test-only folders from the pbxproj; scanned like test files (never).
+    public func isTestSource(_ file: URL) -> Bool {
+        let path = file.standardizedFileURL.path
+        return xcode.testFolders.contains { path.hasPrefix($0.path + "/") }
     }
 
     public var sourceLanguage: String {

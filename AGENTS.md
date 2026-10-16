@@ -33,7 +33,7 @@ Out of scope:
 - `Sources/L10nCore/Lint/` rules, linter, reporters (text, xcode, json, sarif)
 - `Sources/L10nCore/Fix/` key suggestion, fix plans, applying edits, LLM key naming
 - `Sources/L10nCore/Translate/` chat-model clients, masking, plural rules, translation engine
-- `Sources/L10nCore/Commands/` status, doctor, init, add-keys, migrate
+- `Sources/L10nCore/Commands/` status, doctor, init, add-keys, migrate, keys (remove/rename)
 - `Sources/L10nMCP/` MCP server
 - `Sources/l10n-agent/` CLI (swift-argument-parser)
 - `Tests/` Swift Testing suites; `Tests/L10nCoreTests/Fixtures/SampleApp` is the integration fixture
@@ -43,7 +43,7 @@ Out of scope:
 
 - Catalog writes must be byte-identical to Xcode's output for the same content. Unknown fields round-trip. Keys are compared by exact bytes, never normalized (use `ByteKey` for key sets and maps).
 - Symbol names must match `xcstringstool generate-symbols`; non-`Localizable` tables are namespaced (`.Settings.key`).
-- Translations in state `translated` are never overwritten or removed by any command, including single plural categories. Tool output is written as `needs_review`. Broken `needs_review` translations may be retranslated.
+- Translations in state `translated` are never overwritten or removed by any command, including single plural categories. Tool output is written as `needs_review`. Broken `needs_review` translations may be retranslated. The only exceptions are explicit commands: `keys remove` deletes whole keys, without `--force` (never available over MCP) only manual keys no code of their target uses and stale keys, never extracted or `InfoPlist`/`AppShortcuts` keys; and `set-translation --replace-approved` (CLI only) replaces one plain approved value with a validated `needs_review` one. `keys rename` keeps translations, states and the source text, and is refused while code still uses the old key unless it rewrites those lookups (`--update-code`, localization contexts only), and always when the key is also used as a plain or built string or sits under `keys.dynamicPrefixes` (those uses count for L10N106 and `keys remove`, so a rename would let a later remove delete the translations). MCP tools refuse undeclared arguments.
 - Format parity compares argument index and type; reordering via positional specifiers is allowed; plural cases may omit arguments. Substitution `argNum`/`formatSpecifier` must match the source and are part of the source fingerprint.
 - A language may vary a plain source string by plural/device on its own (Xcode "Vary by Plural"); complete variations count as translated and are never machine-translated.
 - Fix plans are untrusted input: apply re-scans files, matches items to fresh sites, and takes only key, comment, specifier and status from the plan. The code style and target catalog are recomputed from the project. It refuses when a file changed, verifies the rewritten file still parses, and changes catalogs only for applied edits.
@@ -75,13 +75,15 @@ Out of scope:
 - Interpolations use the type the file declares for them (parameters, typed locals, typed properties) for their specifier; the nearest binding wins, and an untyped one (`{ x in }`, `for x in`, `if let x`, `case let .a(x)`) makes the type unknown. Only unknown types are guessed. When a plan edits a specifier, generated "%x is name." notes follow it.
 - `fix --plan` previews are recomputed through the same validation as `apply` (`Fixer.prepare`), never printed from the stored plan.
 - Letterless literals that Xcode extracts (L10N006) are fixed by a "Don't translate" catalog entry; the code is not changed. Lint and status ignore values without text once format specifiers are removed.
-- Unused manual keys (L10N106) count literals, generated-symbol identifiers, interpolated literal prefixes and `keys.dynamicPrefixes` across all project Swift files; `InfoPlist` and `AppShortcuts` tables are not checked.
+- Unused manual keys (L10N106) count literals, generated-symbol identifiers, interpolated literal prefixes and `keys.dynamicPrefixes` from the Swift files that resolve the catalog for its table (its own target; ambiguous files, Swift package files and files that see no catalog count for every catalog); `InfoPlist` and `AppShortcuts` tables are not checked.
+- Files in folders that only unit or UI test targets compile (synchronized folders in the pbxproj) are never scanned. `NSError` `userInfo` messages are heuristic (fixes need review): syntax cannot tell whether the error is shown.
+- L10N113 and `translate` reject translations wrapped in JSON objects/arrays or code fences when the source is not.
 - `migrate` runs under the project lock, never overwrites an existing catalog value, cross-checks every `.strings` parse against `PropertyListSerialization`, verifies every value in memory before writing, and writes catalogs and fingerprints in one transaction. It stamps fingerprints only for translations it wrote (against their legacy source), never deletes a legacy file whose values conflicted, and ignores symlinks that leave the project. Interface Builder strings are skipped.
 - `lint` fails on warnings by default (`--fail-on warning`). Glossary translations may list several accepted forms; `translator.instructions` only shapes the prompt.
 
 ## Lint rule IDs
 
-L10N001-L10N006 (code), L10N100-L10N112 (catalogs). IDs are stable; add new rules with new IDs and document them in README.
+L10N001-L10N006 (code), L10N100-L10N113 (catalogs). IDs are stable; add new rules with new IDs and document them in README.
 
 ## Fast start
 

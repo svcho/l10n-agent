@@ -11,7 +11,7 @@ public struct L10nMCPServer: Sendable {
     public let version: String
     /// Mutating tools run one at a time; clients may send calls concurrently.
     private let mutations = AsyncLock()
-    static let mutatingTools: Set<String> = ["l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept", "l10n_migrate_strings"]
+    static let mutatingTools: Set<String> = ["l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept", "l10n_migrate_strings", "l10n_remove_keys", "l10n_rename_key"]
 
     public init(root: URL, version: String) {
         self.root = root.standardizedFileURL
@@ -150,6 +150,18 @@ public struct L10nMCPServer: Sendable {
             annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: false)
         ),
         Tool(
+            name: "l10n_remove_keys",
+            description: "Remove unused keys (L10N106 findings) with all their translations and fingerprints. Only manual keys that no Swift code of their target references, or stale keys, can be removed; referenced keys, keys Xcode extracts from code and InfoPlist/AppShortcuts keys are refused. Set catalog when a key exists in several catalogs.",
+            inputSchema: schema(["keys": stringArray, "catalog": ["type": "string"]], required: ["keys"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: false)
+        ),
+        Tool(
+            name: "l10n_rename_key",
+            description: "Rename a key, keeping its translations, review states and fingerprints. While code looks the key up, the rename is refused unless update_code is true, which rewrites those lookups (key literals and generated symbols) in the Swift files that use the catalog. The new key must follow the key style.",
+            inputSchema: schema(["from": ["type": "string"], "to": ["type": "string"], "catalog": ["type": "string"], "update_code": ["type": "boolean"]], required: ["from", "to"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: false)
+        ),
+        Tool(
             name: "l10n_accept",
             description: "Mark translations as up to date with the current source text (clears L10N103 stale findings) after they were reviewed.",
             inputSchema: schema(["keys": stringArray, "locales": stringArray]),
@@ -167,8 +179,19 @@ public struct L10nMCPServer: Sendable {
     struct AddKeysInput: Decodable { var keys: [NewKey] }
     struct AcceptInput: Decodable { var keys: [String]?; var locales: [String]? }
     struct MigrateInput: Decodable { var apply: Bool?; var remove_legacy: Bool? }
+    struct RemoveKeysInput: Decodable { var keys: [String]; var catalog: String? }
+    struct RenameKeyInput: Decodable { var from: String; var to: String; var catalog: String?; var update_code: Bool? }
 
     func call(name: String, arguments: [String: Value]) async -> CallTool.Result {
+        // Arguments the tool does not declare are refused, never silently ignored (there is,
+        // for example, deliberately no `force` for l10n_remove_keys).
+        if let tool = Self.tools.first(where: { $0.name == name }), case .object(let schema) = tool.inputSchema,
+           case .object(let properties)? = schema["properties"] {
+            let unknown = Set(arguments.keys).subtracting(properties.keys)
+            if !unknown.isEmpty {
+                return failure("Unknown argument(s) for \(name): \(unknown.sorted().joined(separator: ", "))")
+            }
+        }
         guard Self.mutatingTools.contains(name) else {
             return await perform(name: name, arguments: arguments)
         }
@@ -219,6 +242,12 @@ public struct L10nMCPServer: Sendable {
             case "l10n_set_translations":
                 let input = try decode(SetTranslationsInput.self, arguments)
                 return success(try TranslationEngine(project: project).applyProvided(input.translations))
+            case "l10n_remove_keys":
+                let input = try decode(RemoveKeysInput.self, arguments)
+                return success(try KeysCommand.remove(project: project, keys: input.keys, catalog: input.catalog))
+            case "l10n_rename_key":
+                let input = try decode(RenameKeyInput.self, arguments)
+                return success(try KeysCommand.rename(project: project, from: input.from, to: input.to, catalog: input.catalog, updateCode: input.update_code ?? false))
             case "l10n_migrate_strings":
                 let input = try decode(MigrateInput.self, arguments)
                 if input.remove_legacy == true, input.apply != true {

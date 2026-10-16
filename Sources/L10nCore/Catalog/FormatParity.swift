@@ -4,6 +4,23 @@ import Foundation
 /// and type. Reordering (`%2$@ … %1$@`) is allowed; that is what positional
 /// specifiers are for.
 public enum FormatParity {
+    /// Why a translation looks like a wrapper around the text rather than the text itself:
+    /// a JSON object or array (`{"text":"…"}`) or a Markdown code fence, when the source is
+    /// neither. Models and scripts produce these; Xcode shows them verbatim.
+    public static func wrapperProblem(source: String, target: String) -> String? {
+        func isJSONContainer(_ text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let first = trimmed.first, first == "{" || first == "[" else { return false }
+            guard let value = try? JSONParser.parse(trimmed) else { return false }
+            if case .object = value { return true }
+            if case .array = value { return true }
+            return false
+        }
+        if isJSONContainer(target), !isJSONContainer(source) { return "is a JSON value, not the text itself" }
+        if target.contains("```"), !source.contains("```") { return "contains a Markdown code fence" }
+        return nil
+    }
+
     private static func family(_ type: FormatToken.ArgumentType) -> String {
         switch type {
         case .integer, .unsigned, .character: return "integer"

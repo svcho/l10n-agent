@@ -39,7 +39,7 @@ struct MCPServerTests {
     @Test func listsTools() async throws {
         let client = try await connect(root: try makeProject())
         let (tools, _) = try await client.listTools()
-        #expect(Set(tools.map(\.name)) == ["l10n_lint", "l10n_status", "l10n_plan_fixes", "l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept", "l10n_migrate_strings"])
+        #expect(Set(tools.map(\.name)) == ["l10n_lint", "l10n_status", "l10n_plan_fixes", "l10n_apply_fixes", "l10n_translate", "l10n_set_translations", "l10n_add_keys", "l10n_accept", "l10n_migrate_strings", "l10n_remove_keys", "l10n_rename_key"])
     }
 
     @Test func lintPlanApplyAndTranslateLoop() async throws {
@@ -107,5 +107,30 @@ struct MCPServerTests {
         let (content, isError) = try await client.callTool(name: "l10n_lint", arguments: ["paths": ["../../etc"]])
         #expect(isError == true)
         #expect(text(content).contains("outside the project root"))
+    }
+
+    @Test func removeKeysOverMCPCannotForceOrDeleteUsedKeys() async throws {
+        let root = try makeProject()
+        try "import SwiftUI\nfunc f() -> String { String(localized: \"home.title\") }\n".write(to: root.appendingPathComponent("App/Home.swift"), atomically: true, encoding: .utf8)
+        let client = try await connect(root: root)
+        let (forced, forcedError) = try await client.callTool(name: "l10n_remove_keys", arguments: ["keys": ["home.title"], "force": true])
+        #expect(forcedError == true && text(forced).contains("Unknown argument(s)"))
+        let (content, isError) = try await client.callTool(name: "l10n_remove_keys", arguments: ["keys": ["home.title"]])
+        #expect(isError == false)
+        let result = try JSONDecoder().decode(KeyChangeResult.self, from: Data(text(content).utf8))
+        #expect(result.removed.isEmpty && result.rejected["home.title"]?.contains("still referenced") == true)
+        let (renamed, _) = try await client.callTool(name: "l10n_rename_key", arguments: ["from": "home.title", "to": "home.gone"])
+        #expect(text(renamed).contains("pass --update-code"))
+    }
+
+    @Test func setTranslationsOverMCPNeverReplacesApprovedValues() async throws {
+        let root = try makeProject()
+        let catalog = #"{"sourceLanguage":"en","strings":{"home.title":{"comment":"Title","extractionState":"manual","localizations":{"de":{"stringUnit":{"state":"translated","value":"Start"}},"en":{"stringUnit":{"state":"translated","value":"Home"}}}}},"version":"1.1"}"#
+        try catalog.write(to: root.appendingPathComponent("App/Localizable.xcstrings"), atomically: true, encoding: .utf8)
+        let client = try await connect(root: root)
+        let (refused, _) = try await client.callTool(name: "l10n_set_translations", arguments: ["translations": [["key": "home.title", "locale": "de", "value": "Startseite"]]])
+        #expect(text(refused).contains("an approved translation exists"))
+        let (unknown, isError) = try await client.callTool(name: "l10n_set_translations", arguments: ["translations": [["key": "home.title", "locale": "de", "value": "Startseite"]], "replace_approved": true])
+        #expect(isError == true && text(unknown).contains("Unknown argument(s)"))
     }
 }

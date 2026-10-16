@@ -26,12 +26,13 @@ public enum Rules {
     public static let untranslatedCopy = RuleInfo(id: "L10N109", name: "untranslated-copy", defaultSeverity: .info, summary: "A translation is identical to the source text.")
     public static let symbolCollision = RuleInfo(id: "L10N110", name: "symbol-collision", defaultSeverity: .error, summary: "Keys generate the same Swift symbol, or a reserved one; Xcode fails the build.")
     public static let sourceLanguageMismatch = RuleInfo(id: "L10N111", name: "source-language", defaultSeverity: .warning, summary: "A catalog's sourceLanguage differs from the project's source language.")
+    public static let malformedTranslation = RuleInfo(id: "L10N113", name: "malformed-translation", defaultSeverity: .warning, summary: "A translation is wrapped (a JSON value, a code fence) instead of being the text itself.")
     public static let catalogPluralCandidate = RuleInfo(id: "L10N112", name: "catalog-plural-candidate", defaultSeverity: .info, summary: "A catalog value counts something (\"%lld item(s)\") but has no plural variation.")
 
     public static let all: [RuleInfo] = [
         unlocalized, textAsKey, concatenation, missingKey, pluralCandidate, nonTextLiteral,
         catalogParse, missingTranslation, needsReview, staleTranslation, formatMismatch, missingComment,
-        unusedKey, keyStyle, glossary, untranslatedCopy, symbolCollision, sourceLanguageMismatch, catalogPluralCandidate,
+        unusedKey, keyStyle, glossary, untranslatedCopy, symbolCollision, sourceLanguageMismatch, catalogPluralCandidate, malformedTranslation,
     ]
 
     public static func info(_ id: String) -> RuleInfo? {
