@@ -30,6 +30,32 @@ struct RerunRegressionTests {
         #expect(try lint(root, rules: ["L10N106"]).isEmpty)
     }
 
+    @Test func renameRefusesKeysUsedAsPlainOrBuiltStrings() throws {
+        let files = [
+            "App/Localizable.xcstrings": TestSupport.catalogJSON([
+                "color.name.blue": TestSupport.manual("Blue", translations: ["de": TestSupport.unit("Blau")]),
+                "onboarding.step1": TestSupport.manual("Welcome", translations: ["de": TestSupport.unit("Willkommen")]),
+            ]),
+            "App/Edit.swift": """
+            func f(name: String) -> String { NSLocalizedString(name, comment: "Color") }
+            func step(_ n: Int) -> String { NSLocalizedString("onboarding.step\\(n)", comment: "") }
+            """,
+            "Shared/Package.swift": "// swift-tools-version: 6.0\n",
+            "Shared/Sources/Shared/Colors.swift": "let colors = [(\"#0055CC\", \"color.name.blue\")]\n",
+        ]
+        let root = try TestSupport.makeProject(files)
+        let project = try Project.discover(root: root)
+        let data = try KeysCommand.rename(project: project, from: "color.name.blue", to: "color.name.azure", updateCode: true)
+        #expect(data.renamed.isEmpty)
+        #expect(data.rejected["color.name.blue"]?.contains("Shared/Sources/Shared/Colors.swift:1") == true)
+        let built = try KeysCommand.rename(project: project, from: "onboarding.step1", to: "onboarding.welcome", updateCode: true)
+        #expect(built.rejected["onboarding.step1"]?.contains("App/Edit.swift:2") == true)
+        // The translations stay, and remove still sees the key as used.
+        #expect(try KeysCommand.remove(project: try Project.discover(root: root), keys: ["color.name.blue", "onboarding.step1"]).removed.isEmpty)
+        let catalog = try StringCatalog.load(root.appendingPathComponent("App/Localizable.xcstrings"))
+        #expect(catalog.entry("color.name.blue")?.localization("de")?.stringUnit?.value == "Blau")
+    }
+
     // R2
     @Test func keysRemoveRefusesReferencedKeys() throws {
         let root = try TestSupport.makeProject([
@@ -255,10 +281,9 @@ struct RerunRegressionTests {
                     VStack {
                         Text(.title).font(.title)
                         Text(.Settings.title)
-                        Button(String(localized: "title")) { print("title") }
+                        Button(String(localized: "title")) {}
                     }
                 }
-                func check(_ s: String) -> Bool { s == "title" }
             }
             """,
         ])
@@ -268,7 +293,17 @@ struct RerunRegressionTests {
         #expect(code.contains("Text(.homeTitle).font(.title)"), "only the lookup changes, not .font(.title)")
         #expect(code.contains("Text(.Settings.title)"), "another table's symbol stays")
         #expect(code.contains("String(localized: \"home.title\")"))
-        #expect(code.contains("print(\"title\")") && code.contains("s == \"title\""), "plain strings stay")
+
+        // A plain string equal to the key keeps it alive for L10N106 and keys remove, so the
+        // rename is refused rather than stranding it.
+        let plain = try TestSupport.makeProject([
+            ".l10n-agent.yml": "codeStyle: symbols\n",
+            "App/Localizable.xcstrings": TestSupport.catalogJSON(["title": TestSupport.manual("Title")]),
+            "App/V.swift": "import SwiftUI\nstruct V: View { var body: some View { Button(String(localized: \"title\")) { print(\"title\") } } }\n",
+        ])
+        let refused = try KeysCommand.rename(project: try Project.discover(root: plain), from: "title", to: "home.title", updateCode: true)
+        #expect(refused.renamed.isEmpty && refused.rejected["title"]?.contains("App/V.swift:2") == true)
+        #expect(try String(contentsOf: plain.appendingPathComponent("App/V.swift"), encoding: .utf8).contains("String(localized: \"title\")"), "nothing was rewritten")
     }
 
     @Test func removeRefusesBuildAndExtractedKeys() throws {

@@ -105,12 +105,14 @@ public enum KeysCommand {
             }
 
             // Find every lookup of the key in the files of the catalog's target, in memory.
-            let scanner = Linter(project: project).scanner
+            let linter = Linter(project: project)
+            let scanner = linter.scanner
             let newSymbol = SymbolNaming.bareName(for: new) ?? new
             let newLiteral = String(Fixer.swiftLiteral([.text(new)]).dropFirst().dropLast())
             var sources: [String: SourceText] = [:]
             var found = 0
             var manual: [String] = []
+            var lookupRanges: [String: Set<ByteRange>] = [:]   // file → literal ranges that are lookups
             for file in project.swiftFiles where project.catalogURLs(forTable: target.tableName, file: file).map(\.standardizedFileURL).contains(target.url.standardizedFileURL) {
                 let source = try SourceText.read(file)
                 let relative = project.relativePath(file)
@@ -121,6 +123,7 @@ public enum KeysCommand {
                     && site.key.map({ $0.utf8.elementsEqual(old.utf8) }) == true {
                     found += 1
                     if let range = site.literalContentRange {
+                        lookupRanges[relative, default: []].insert(range)
                         edits.append((range.start..<range.end, newLiteral))
                     } else {
                         manual.append("\(relative):\(site.line)")
@@ -148,6 +151,16 @@ public enum KeysCommand {
             }
             if !manual.isEmpty {
                 return reject("raw, multiline or interpolated literals use \"\(old)\" (\(manual.joined(separator: ", "))); change them by hand first")
+            }
+            // Uses that are not lookups (a key held as data, `"color.name.blue"`, or built at
+            // runtime, `"color.name.\(x)"`) keep the old key alive for L10N106 and `keys remove`.
+            // Renaming would strand them and let a later remove delete the translations.
+            let plain = plainUses(of: old, files: linter.referenceFiles(for: target), lookups: lookupRanges, project: project)
+            if !plain.isEmpty {
+                return reject("\"\(old)\" is also used as a plain or built string (\(plain.prefix(5).joined(separator: ", "))\(plain.count > 5 ? ", …" : "")); rename those by hand first, then run keys rename")
+            }
+            if let prefix = project.config.keys.dynamicPrefixes.first(where: { old.hasPrefix($0) }) {
+                return reject("\"\(old)\" is under keys.dynamicPrefixes (\(prefix)); code builds it at runtime, so rename it by hand")
             }
 
             // An extracted key without a source value uses the key itself as its text; keep it.
@@ -252,6 +265,52 @@ public enum KeysCommand {
         let visitor = Visitor(symbol: symbol, namespace: namespace)
         visitor.walk(Parser.parse(source: source))
         return visitor.found
+    }
+
+    /// `file:line` of string literals equal to `key` that are not localization lookups, and of
+    /// interpolated literals whose leading text is a prefix of `key` (keys built at runtime).
+    static func plainUses(of key: String, files: [URL], lookups: [String: Set<ByteRange>], project: Project) -> [String] {
+        final class Visitor: SyntaxVisitor {
+            let key: String
+            let lookups: Set<ByteRange>
+            var lines: [Int] = []
+            let converter: SourceLocationConverter
+            init(key: String, lookups: Set<ByteRange>, converter: SourceLocationConverter) {
+                self.key = key
+                self.lookups = lookups
+                self.converter = converter
+                super.init(viewMode: .sourceAccurate)
+            }
+            override func visit(_ node: StringLiteralExprSyntax) -> SyntaxVisitorContinueKind {
+                var prefix = ""
+                var interpolated = false
+                for segment in node.segments {
+                    switch segment {
+                    case .stringSegment(let text): if !interpolated { prefix += text.content.text }
+                    case .expressionSegment: interpolated = true
+                    }
+                    if interpolated { break }
+                }
+                let line = converter.location(for: node.positionAfterSkippingLeadingTrivia).line
+                if interpolated {
+                    if prefix.count >= 3, key.hasPrefix(prefix) { lines.append(line) }
+                } else if node.representedLiteralValue?.utf8.elementsEqual(key.utf8) == true {
+                    let range = SwiftScanner.contentRange(of: node)
+                    if range.map({ !lookups.contains($0) }) ?? true { lines.append(line) }
+                }
+                return .skipChildren
+            }
+        }
+        var result: [String] = []
+        for file in files {
+            guard let source = try? String(contentsOf: file, encoding: .utf8), source.contains(String(key.prefix(3))) else { continue }
+            let relative = project.relativePath(file)
+            let tree = Parser.parse(source: source)
+            let visitor = Visitor(key: key, lookups: lookups[relative] ?? [], converter: SourceLocationConverter(fileName: relative, tree: tree))
+            visitor.walk(tree)
+            result += visitor.lines.map { "\(relative):\($0)" }
+        }
+        return result
     }
 
     /// APIs that take a generated localization symbol.

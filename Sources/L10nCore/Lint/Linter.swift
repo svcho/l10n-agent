@@ -441,16 +441,22 @@ public struct Linter {
     /// often holds keys that the app looks up in its own bundle (`NSLocalizedString(color.name)`).
     func references(for catalog: StringCatalog) -> ProjectIndex.References {
         var result = ProjectIndex.References()
-        let url = catalog.url.standardizedFileURL
-        for file in project.swiftFiles {
-            let candidates = project.catalogURLs(forTable: catalog.tableName, file: file).map(\.standardizedFileURL)
-            guard candidates.contains(url) || candidates.isEmpty || PackageTarget.directory(for: file, root: project.root) != nil else { continue }
+        for file in referenceFiles(for: catalog) {
             guard let refs = index.files[file.standardizedFileURL.path] else { continue }
             result.literals.formUnion(refs.literals)
             result.literalPrefixes.formUnion(refs.literalPrefixes)
             result.identifiers.formUnion(refs.identifiers)
         }
         return result
+    }
+
+    /// The files whose literals count as uses of this catalog's keys (see `references(for:)`).
+    func referenceFiles(for catalog: StringCatalog) -> [URL] {
+        let url = catalog.url.standardizedFileURL
+        return project.swiftFiles.filter { file in
+            let candidates = project.catalogURLs(forTable: catalog.tableName, file: file).map(\.standardizedFileURL)
+            return candidates.contains(url) || candidates.isEmpty || PackageTarget.directory(for: file, root: project.root) != nil
+        }
     }
 
     /// `"%lld item(s)"`, `"%d accounts"`: a counted noun without plural variation.

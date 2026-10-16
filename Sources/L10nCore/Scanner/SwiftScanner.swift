@@ -40,6 +40,14 @@ public struct SwiftScanner {
         return text.contains("generated") && (text.contains("do not edit") || text.contains("don't edit") || text.contains("do not modify"))
     }
 
+    /// Bytes between the quotes of `"plain"` (no pounds, no interpolation, one line).
+    static func contentRange(of literal: StringLiteralExprSyntax) -> ByteRange? {
+        guard literal.openingPounds == nil, literal.openingQuote.tokenKind == .stringQuote, literal.segments.count == 1,
+              case .stringSegment(let segment)? = literal.segments.first
+        else { return nil }
+        return ByteRange(start: segment.positionAfterSkippingLeadingTrivia.utf8Offset, end: segment.endPositionBeforeTrailingTrivia.utf8Offset)
+    }
+
     /// Files the scanner reports nothing for: tests and generated sources.
     public static func isSkipped(path: String, source: String) -> Bool {
         isTestFile(path: path, source: source) || isGeneratedFile(source: source)
@@ -226,16 +234,8 @@ private final class ScanVisitor: SyntaxVisitor {
             codeComment: context.codeComment,
             heuristic: context.heuristic,
             typeHints: typeHints,
-            literalContentRange: Self.contentRange(of: literal)
+            literalContentRange: SwiftScanner.contentRange(of: literal)
         ))
-    }
-
-    /// Bytes between the quotes of `"plain"` (no pounds, no interpolation, one line).
-    static func contentRange(of literal: StringLiteralExprSyntax) -> ByteRange? {
-        guard literal.openingPounds == nil, literal.openingQuote.tokenKind == .stringQuote, literal.segments.count == 1,
-              case .stringSegment(let segment)? = literal.segments.first
-        else { return nil }
-        return ByteRange(start: segment.positionAfterSkippingLeadingTrivia.utf8Offset, end: segment.endPositionBeforeTrailingTrivia.utf8Offset)
     }
 
     private func reportConcatenation(root: ExprSyntax, context: Classification) {

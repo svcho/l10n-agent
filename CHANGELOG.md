@@ -6,7 +6,7 @@ All notable changes to `l10n-agent` are documented here.
 
 Follow-up to the pangi rerun (R1–R11 in `docs/plan-trial-fixes.md`).
 
-- `l10n-agent keys remove` / `keys rename` (MCP `l10n_remove_keys`, `l10n_rename_key`): remove unused keys, or rename keys with their translations, review states, source text and fingerprints. Renames of keys that code uses need `--update-code`, which rewrites only localization lookups. Remove refuses extracted and `InfoPlist`/`AppShortcuts` keys without `--force`, and MCP has no force.
+- `l10n-agent keys remove` / `keys rename` (MCP `l10n_remove_keys`, `l10n_rename_key`): remove unused keys, or rename keys with their translations, review states, source text and fingerprints. Renames of keys that code uses need `--update-code`, which rewrites only localization lookups; keys also used as plain or built strings are refused. Remove refuses extracted and `InfoPlist`/`AppShortcuts` keys without `--force`, and MCP has no force.
 - New rule L10N113 (malformed-translation): JSON-wrapped or code-fenced translations; `translate` rejects such model output.
 - `set-translation --replace-approved` replaces a broken approved plain value (written as `needs_review`).
 - L10N106 counts references per target, so a key used only by another target's catalog is reported.

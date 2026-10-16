@@ -43,7 +43,7 @@ public enum ReplacementContext: String, Equatable, Sendable, Codable {
     case nsLocalizedCall
 }
 
-public struct ByteRange: Equatable, Sendable, Codable {
+public struct ByteRange: Hashable, Sendable, Codable {
     public var start: Int
     public var end: Int
 
