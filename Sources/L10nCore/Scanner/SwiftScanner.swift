@@ -45,8 +45,9 @@ public struct SwiftScanner {
         isTestFile(path: path, source: source) || isGeneratedFile(source: source)
     }
 
-    public func scan(source: String, path: String) -> [StringSite] {
-        if Self.isSkipped(path: path, source: source) { return [] }
+    /// `includeSkipped` also scans test and generated files (to find every use of a key).
+    public func scan(source: String, path: String, includeSkipped: Bool = false) -> [StringSite] {
+        if !includeSkipped, Self.isSkipped(path: path, source: source) { return [] }
         let parsed = Parser.parse(source: source)
         let tree = OperatorTable.standardOperators.foldAll(parsed) { _ in }
         let converter = SourceLocationConverter(fileName: path, tree: tree)
@@ -224,8 +225,17 @@ private final class ScanVisitor: SyntaxVisitor {
             unfixableReason: unfixable,
             codeComment: context.codeComment,
             heuristic: context.heuristic,
-            typeHints: typeHints
+            typeHints: typeHints,
+            literalContentRange: Self.contentRange(of: literal)
         ))
+    }
+
+    /// Bytes between the quotes of `"plain"` (no pounds, no interpolation, one line).
+    static func contentRange(of literal: StringLiteralExprSyntax) -> ByteRange? {
+        guard literal.openingPounds == nil, literal.openingQuote.tokenKind == .stringQuote, literal.segments.count == 1,
+              case .stringSegment(let segment)? = literal.segments.first
+        else { return nil }
+        return ByteRange(start: segment.positionAfterSkippingLeadingTrivia.utf8Offset, end: segment.endPositionBeforeTrailingTrivia.utf8Offset)
     }
 
     private func reportConcatenation(root: ExprSyntax, context: Classification) {
@@ -289,7 +299,7 @@ private final class ScanVisitor: SyntaxVisitor {
     private func makeSite(
         node: Syntax, replaceNode: Syntax, kind: SiteKind, context: ReplacementContext, api: String, role: String,
         segments: [LiteralSegment], key: String?, table: String?, hasDefaultValue: Bool, unfixableReason: String?, codeComment: String?,
-        heuristic: Bool = false, typeHints: [String?] = []
+        heuristic: Bool = false, typeHints: [String?] = [], literalContentRange: ByteRange? = nil
     ) -> StringSite {
         let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
         let start = replaceNode.positionAfterSkippingLeadingTrivia.utf8Offset
@@ -313,7 +323,8 @@ private final class ScanVisitor: SyntaxVisitor {
             codeComment: codeComment,
             heuristic: heuristic,
             typeHints: typeHints,
-            enclosingMember: enclosingMemberName(of: node)
+            enclosingMember: enclosingMemberName(of: node),
+            literalContentRange: literalContentRange
         )
     }
 
@@ -364,7 +375,10 @@ private final class ScanVisitor: SyntaxVisitor {
         // `NSError(userInfo: [NSLocalizedDescriptionKey: "…"])`: these values are shown to users.
         if let element = parent.as(DictionaryElementSyntax.self), element.value.id == expression.id,
            let keyName = Self.referenceName(element.key), APITables.errorUserInfoKeys.contains(keyName) {
-            return Classification(kind: .unlocalized, replacement: .string, api: "userInfo[\(keyName)]", role: keyName == "NSLocalizedRecoverySuggestionErrorKey" ? "hint" : "message")
+            // Whether the error is ever shown cannot be seen from syntax (many are only logged).
+            var classification = Classification(kind: .unlocalized, replacement: .string, api: "userInfo[\(keyName)]", role: keyName == "NSLocalizedRecoverySuggestionErrorKey" ? "hint" : "message")
+            classification.heuristic = true
+            return classification
         }
 
         if let initializer = parent.as(InitializerClauseSyntax.self),

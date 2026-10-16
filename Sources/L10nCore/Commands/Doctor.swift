@@ -61,7 +61,7 @@ public enum DoctorCommand {
     /// Files the scanner reads; tests and generated files are skipped and only counted.
     static func swiftFilesDetail(_ project: Project) -> String {
         let scanned = project.swiftFiles.filter { url in
-            guard let source = try? String(contentsOf: url, encoding: .utf8) else { return false }
+            guard !project.isTestSource(url), let source = try? String(contentsOf: url, encoding: .utf8) else { return false }
             return !SwiftScanner.isSkipped(path: project.relativePath(url), source: source)
         }.count
         let skipped = project.swiftFiles.count - scanned

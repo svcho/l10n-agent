@@ -18,6 +18,10 @@ public struct CatalogStatus: Codable, Equatable, Sendable {
     public var sourceLanguage: String
     public var keys: Int
     public var manualKeys: Int
+    /// Keys whose source has no words once format specifiers are removed (`%lld`, `•`); never counted.
+    public var withoutText: Int = 0
+    /// Keys marked "Don't translate"; never counted.
+    public var doNotTranslate: Int = 0
     public var locales: [LocaleStatus]
 }
 
@@ -39,13 +43,19 @@ public enum StatusCommand {
             var perLocale = Dictionary(uniqueKeysWithValues: locales.map { ($0, LocaleStatus(locale: $0)) })
             var keyCount = 0
             var manual = 0
+            var withoutText = 0
+            var doNotTranslate = 0
             for (key, entry) in catalog.entries {
                 keyCount += 1
                 if entry.isManual { manual += 1 }
+                if !entry.shouldTranslate { doNotTranslate += 1 }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
                 // Like lint: values without letters ("%lld", "•") need no translation.
-                guard FormatSpecifier.hasText(sourceNode.leaves.first?.unit.value ?? key) else { continue }
+                guard FormatSpecifier.hasText(sourceNode.leaves.first?.unit.value ?? key) else {
+                    withoutText += 1
+                    continue
+                }
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 for locale in locales {
                     perLocale[locale]!.total += 1
@@ -64,7 +74,7 @@ public enum StatusCommand {
                     }
                 }
             }
-            result.append(CatalogStatus(catalog: path, sourceLanguage: catalog.sourceLanguage, keys: keyCount, manualKeys: manual, locales: locales.compactMap { perLocale[$0] }))
+            result.append(CatalogStatus(catalog: path, sourceLanguage: catalog.sourceLanguage, keys: keyCount, manualKeys: manual, withoutText: withoutText, doNotTranslate: doNotTranslate, locales: locales.compactMap { perLocale[$0] }))
         }
         return StatusReport(sourceLanguage: project.sourceLanguage, targetLocales: locales, codeStyle: project.usesSymbols ? "symbols" : "literal", catalogs: result)
     }
@@ -89,7 +99,11 @@ public enum StatusCommand {
         }
         for catalog in report.catalogs {
             lines.append("")
-            lines.append("\(catalog.catalog)  (\(catalog.keys) keys, \(catalog.manualKeys) manual)")
+            var skipped: [String] = []
+            if catalog.withoutText > 0 { skipped.append("\(catalog.withoutText) without text") }
+            if catalog.doNotTranslate > 0 { skipped.append("\(catalog.doNotTranslate) don't translate") }
+            let note = skipped.isEmpty ? "" : "; \(skipped.joined(separator: " and ")) not counted"
+            lines.append("\(catalog.catalog)  (\(catalog.keys) keys, \(catalog.manualKeys) manual\(note))")
             for locale in catalog.locales {
                 let name = locale.locale.padding(toLength: 8, withPad: " ", startingAt: 0)
                 lines.append("  \(name) \(String(locale.percentComplete).leftPad(3))%  approved \(locale.approved), needs review \(locale.needsReview), missing \(locale.missing), stale \(locale.stale)")

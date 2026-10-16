@@ -145,10 +145,12 @@ public struct Linter {
         return sites
     }
 
+    /// Swift files to scan: the selection, without files of test-only targets.
     func selectedSwiftFiles(_ files: [String]?) -> [URL] {
-        guard let files, !files.isEmpty else { return project.swiftFiles }
+        let scannable = project.swiftFiles.filter { !project.isTestSource($0) }
+        guard let files, !files.isEmpty else { return scannable }
         let wanted = Set(files.map { project.relativePath((try? PathUtil.resolveInside($0, root: project.root)) ?? project.root.appendingPathComponent($0)) })
-        return project.swiftFiles.filter { url in
+        return scannable.filter { url in
             let relative = project.relativePath(url)
             return wanted.contains(relative) || wanted.contains { relative.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
         }
@@ -225,7 +227,9 @@ public struct Linter {
                 // An existing key: a heuristic match is most likely a parameter that localizes
                 // it (`errorAlert(title: "content.error.title")`). At a known UI API the raw key
                 // would be shown, but rewriting it into a defaultValue would be wrong too.
-                if !site.heuristic {
+                // NSError messages are heuristic only because they may never be shown; a raw
+                // key there is still shown as is whenever they are.
+                if !site.heuristic || site.api.hasPrefix("userInfo[") {
                     add(Rules.unlocalized, "\(quoted) is a catalog key but \(site.api) shows it as is; wrap it in String(localized:)", fixable: false)
                 }
             } else if !site.hasInterpolation, Self.looksLikeIdentifier(site.staticText) {
@@ -304,14 +308,15 @@ public struct Linter {
             var manualKeys: [String] = []
             // Info.plist and App Shortcuts tables are referenced by the build, not by Swift code.
             let checksReferences = !["InfoPlist", "AppShortcuts"].contains(catalog.tableName)
+            let references = checksReferences ? self.references(for: catalog) : ProjectIndex.References()
             for (key, entry) in catalog.entries {
                 if entry.isManual { manualKeys.append(key) }
                 if entry.isStale {
                     add(Rules.unusedKey, "Key \"\(key)\" is no longer referenced in code (extractionState: stale)", key: key)
                     continue
                 }
-                if entry.isManual, checksReferences, !isReferenced(key) {
-                    add(Rules.unusedKey, "Key \"\(key)\" is not referenced by any Swift file of the project; remove it, or list its prefix under keys.dynamicPrefixes if code builds it at runtime", key: key)
+                if entry.isManual, checksReferences, !isReferenced(key, in: references) {
+                    add(Rules.unusedKey, "Key \"\(key)\" is not referenced by any Swift file that uses this catalog; remove it (l10n-agent keys remove), or list its prefix under keys.dynamicPrefixes if code builds it at runtime", key: key)
                 }
                 if entry.isManual, project.config.semanticKeys {
                     let violations = project.config.keys.violations(for: key)
@@ -364,6 +369,10 @@ public struct Linter {
                         if let problem = FormatParity.problem(source: match.leaf.value, target: leaf.unit.value, allowsOmission: match.isPluralCase && leaf.path.last != "other") {
                             let where_ = leaf.label.isEmpty ? "" : " (\(leaf.label))"
                             add(Rules.formatMismatch, "Translation \(locale)\(where_) of \"\(key)\": \(problem)", key: key, locales: [locale])
+                        }
+                        if let problem = FormatParity.wrapperProblem(source: match.leaf.value, target: leaf.unit.value) {
+                            let where_ = leaf.label.isEmpty ? "" : " (\(leaf.label))"
+                            add(Rules.malformedTranslation, "Translation \(locale)\(where_) of \"\(key)\" \(problem); users would see it verbatim", key: key, locales: [locale])
                         }
                         if leaf.unit.value == match.leaf.value, leaf.unit.value.contains(" "), leaf.unit.value.contains(where: \.isLetter) {
                             if !identical.contains(locale) { identical.append(locale) }
@@ -419,11 +428,29 @@ public struct Linter {
     /// Whether any Swift file of the project uses `key`: as a complete literal, as the
     /// generated symbol, under an interpolated literal prefix (`"settings.\(name)"`), or
     /// under a configured dynamic prefix.
-    func isReferenced(_ key: String) -> Bool {
-        if index.literals.contains(ByteKey(key)) { return true }
-        if let symbol = SymbolNaming.bareName(for: key), index.identifiers.contains(symbol) { return true }
+    func isReferenced(_ key: String, in references: ProjectIndex.References) -> Bool {
+        if references.literals.contains(ByteKey(key)) { return true }
+        if let symbol = SymbolNaming.bareName(for: key), references.identifiers.contains(symbol) { return true }
         if project.config.keys.dynamicPrefixes.contains(where: { key.hasPrefix($0) }) { return true }
-        return index.literalPrefixes.contains { $0.count >= 3 && key.hasPrefix($0) }
+        return references.literalPrefixes.contains { $0.count >= 3 && key.hasPrefix($0) }
+    }
+
+    /// References from the Swift files that resolve this catalog for its table (its own
+    /// target). A file whose catalog is ambiguous counts for every candidate. Files in Swift
+    /// packages, and files that see no catalog at all, count for every catalog: shared code
+    /// often holds keys that the app looks up in its own bundle (`NSLocalizedString(color.name)`).
+    func references(for catalog: StringCatalog) -> ProjectIndex.References {
+        var result = ProjectIndex.References()
+        let url = catalog.url.standardizedFileURL
+        for file in project.swiftFiles {
+            let candidates = project.catalogURLs(forTable: catalog.tableName, file: file).map(\.standardizedFileURL)
+            guard candidates.contains(url) || candidates.isEmpty || PackageTarget.directory(for: file, root: project.root) != nil else { continue }
+            guard let refs = index.files[file.standardizedFileURL.path] else { continue }
+            result.literals.formUnion(refs.literals)
+            result.literalPrefixes.formUnion(refs.literalPrefixes)
+            result.identifiers.formUnion(refs.identifiers)
+        }
+        return result
     }
 
     /// `"%lld item(s)"`, `"%d accounts"`: a counted noun without plural variation.

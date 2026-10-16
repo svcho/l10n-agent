@@ -60,6 +60,11 @@ public struct KeySuggester: Sendable {
     public func projectPrefix(for site: StringSite, siblings: [String: [String]], catalogKeys: [String] = []) -> String? {
         let fallbackScope = effectiveScope(for: site)
         if fallbackScope == "common" { return nil }
+        // Error descriptions go where the catalog keeps its errors (`error.…`).
+        if site.api.hasPrefix("userInfo["), let errorScope = Self.errorScope(catalogKeys),
+           policy.scopes.isEmpty || policy.scopes.contains(errorScope) {
+            return errorScope
+        }
         var keys = siblings[site.enclosingType ?? ""] ?? []
         if keys.isEmpty { keys = siblings.values.flatMap { $0 } }
         if keys.count < 2, let dominant = Self.dominantFirstSegment(catalogKeys), dominant != fallbackScope {
@@ -85,6 +90,14 @@ public struct KeySuggester: Sendable {
         return common.joined(separator: ".")
     }
 
+    /// `error` or `errors` when at least 3 keys start with it.
+    static func errorScope(_ keys: [String]) -> String? {
+        for scope in ["error", "errors"] where keys.filter({ $0.hasPrefix(scope + ".") }).count >= 3 {
+            return scope
+        }
+        return nil
+    }
+
     /// The first segment at least 80% of (5 or more) keys share.
     static func dominantFirstSegment(_ keys: [String]) -> String? {
         guard keys.count >= 5 else { return nil }
@@ -101,7 +114,14 @@ public struct KeySuggester: Sendable {
         }
         var meaningful = words.filter { !Self.stopwords.contains($0.lowercased()) }
         if meaningful.isEmpty { meaningful = words }
-        var slug = format(words: Array(meaningful.prefix(3)))
+        // Long phrases keep their head and their last word ("Model container not yet
+        // initialized" → modelContainerInitialized) instead of stopping mid-phrase.
+        // A negation in the middle is kept, so the key does not say the opposite.
+        let negations: Set<String> = ["not", "no", "never", "without", "cannot", "cant", "dont", "isnt"]
+        let slugWords = meaningful.count > 3
+            ? Array(meaningful.prefix(2)) + meaningful.dropFirst(2).dropLast().filter { negations.contains($0.lowercased()) }.prefix(1) + [meaningful.last!]
+            : meaningful
+        var slug = format(words: slugWords)
         if slug.isEmpty { slug = "text" }
         if let first = slug.first, first.isNumber { slug = "n" + slug }
 

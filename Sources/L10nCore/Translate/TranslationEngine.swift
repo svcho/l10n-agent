@@ -573,6 +573,9 @@ public final class TranslationEngine: @unchecked Sendable {
             if let problem = FormatParity.problem(source: source, target: restored) {
                 return .failure(Problem(message: "Placeholder problem: \(problem). Keep every ⟦…⟧ token exactly once."))
             }
+            if let problem = FormatParity.wrapperProblem(source: source, target: restored) {
+                return .failure(Problem(message: "The translation \(problem); return only the translated text."))
+            }
             return .success(.text(restored))
         case (.forms(let forms), let sourceForms?):
             let categories = unit.categories ?? ["one", "other"]
@@ -590,6 +593,9 @@ public final class TranslationEngine: @unchecked Sendable {
                     return .failure(Problem(message: "Form \(category): \(error)"))
                 }
                 let restored = restoredForms[category]!
+                if let problem = FormatParity.wrapperProblem(source: reference, target: restored) {
+                    return .failure(Problem(message: "Form \(category) \(problem); return only the translated text."))
+                }
                 // "other" covers arbitrary counts and must keep every argument; other
                 // categories may drop the count ("One file") but must not hard-code it.
                 if let problem = FormatParity.problem(source: reference, target: restored, allowsOmission: category != "other") {
@@ -805,7 +811,10 @@ public final class TranslationEngine: @unchecked Sendable {
     // MARK: Provided translations
 
     /// Validates and writes translations supplied by a caller (state `needs_review`).
-    public func applyProvided(_ provided: [ProvidedTranslation]) throws -> TranslateReport {
+    /// `replaceApproved` is the one explicit exception to "approved translations are never
+    /// overwritten": a human asked to replace a broken approved plain value. The new value is
+    /// still validated and written as `needs_review`, so it must be approved again.
+    public func applyProvided(_ provided: [ProvidedTranslation], replaceApproved: Bool = false) throws -> TranslateReport {
         try ProjectLock.withLock(root: project.root) {
             var loaded = try load(TranslateOptions())
             var report = TranslateReport(model: "provided", dryRun: false, planned: provided.count, translated: 0, perLocale: [:], failed: [], approvedSkipped: [], warnings: [], units: nil, aborted: nil)
@@ -829,9 +838,15 @@ public final class TranslationEngine: @unchecked Sendable {
                     report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "the key is marked as not translatable or unused"))
                     continue
                 }
-                let approvedLeaves = entry.localization(item.locale)?.leaves.filter(\.unit.isApproved) ?? []
-                if item.forms == nil, !approvedLeaves.isEmpty {
-                    report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "an approved translation exists; change it in Xcode instead"))
+                var approvedLeaves = entry.localization(item.locale)?.leaves.filter(\.unit.isApproved) ?? []
+                let replacesApproved = replaceApproved && item.forms == nil && approvedLeaves.map(\.path) == [[]]
+                if replacesApproved, approvedLeaves.first?.unit.value.utf8.elementsEqual((item.value ?? "").utf8) == true {
+                    report.warnings.append("\(item.key) [\(item.locale)]: the approved translation already has this value; left as is")
+                    continue
+                }
+                if item.forms == nil, !approvedLeaves.isEmpty, !replacesApproved {
+                    let hint = replaceApproved ? "only a plain approved value can be replaced" : "change it in Xcode, or pass --replace-approved"
+                    report.failed.append(TranslationIssue(catalog: path, key: item.key, locale: item.locale, reason: "an approved translation exists; \(hint)"))
                     continue
                 }
                 // Plural forms: approved categories stay untouched; the caller fills the rest.
@@ -868,6 +883,16 @@ public final class TranslationEngine: @unchecked Sendable {
                 }
                 switch validate(raw, for: unit) {
                 case .success(let result):
+                    if replacesApproved, var replaced = loaded.catalogs[path], var target = replaced.entry(item.key) {
+                        // Demote the approved value so the write below may replace it.
+                        var node = target.localization(item.locale)
+                        if let unit = node?.stringUnit { node?.stringUnit = StringUnit(state: StringUnit.State.needsReview, value: unit.value) }
+                        target.setLocalization(item.locale, node)
+                        replaced.setEntry(item.key, target)
+                        loaded.catalogs[path] = replaced
+                        approvedLeaves = []
+                        report.warnings.append("\(item.key) [\(item.locale)]: replaced an approved translation; it needs review again")
+                    }
                     write(result, for: unit, into: &loaded)
                     // Approved forms next to the provided ones were not reviewed against the
                     // current source: keep the old fingerprint so their staleness stays visible.

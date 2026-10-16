@@ -103,8 +103,10 @@ Saved plans are treated as untrusted input. `apply` re-scans every file and take
 | `lint [--format text\|xcode\|json\|sarif] [--rules …] [--files …] [--fail-on error\|warning\|info\|off]` | Report findings. Exit code 1 when a finding reaches `--fail-on` (default `warning`, so unlocalized text and missing or stale translations fail; info never does). |
 | `fix [--apply] [--include-review] [--llm-keys] [--plan-out plan.json] [--plan plan.json] [--ids …] [--files …]` | Preview or apply code + catalog fixes. `--llm-keys` asks the local model for better key names and comments. Plans can be saved, edited and applied later; apply refuses if a file changed in between. |
 | `translate [--locale …] [--key …] [--catalog …] [--model …] [--batch-size N] [--dry-run]` | Translate missing and stale strings with the local model. A dry run also says when the real run would be refused (for example a cloud model without the opt-in). |
-| `set-translation --key K --locale L (--value V \| --form one=… --form other=…) [--catalog C]`, or `--file t.json` | Write translations you made yourself. Same validation as MCP `l10n_set_translations`; written as `needs_review`, approved entries are never overwritten. |
-| `status [--fail-under N] [--approved-only]` | Coverage per catalog and locale. With `--fail-under 100`, exit code 1 when any catalog/locale is below 100% (approved + needs review, or approved only). |
+| `set-translation --key K --locale L (--value V \| --form one=… --form other=…) [--catalog C] [--replace-approved]`, or `--file t.json` | Write translations you made yourself. Same validation as MCP `l10n_set_translations`; written as `needs_review`. Approved entries are never overwritten, except a plain approved value with the explicit `--replace-approved` (for a broken value; it then needs review again). |
+| `keys remove <key>… [--catalog C] [--force]` | Remove unused keys (L10N106) with all their translations and fingerprints. Without `--force` only manual keys no Swift code of the catalog's target uses, and stale keys, can go; keys Xcode extracts from code and `InfoPlist`/`AppShortcuts` keys are refused. |
+| `keys rename <old> <new> [--catalog C] [--update-code]` | Rename a key, keeping its translations, review states, source text and fingerprints. While code looks the key up, the rename needs `--update-code`, which rewrites those lookups (key literals and generated symbols in localization calls, including tests) in the files that use the catalog. Plain strings that happen to equal the key are left alone. |
+| `status [--fail-under N] [--approved-only]` | Coverage per catalog and locale; keys without text (`%lld`, `•`) and *Don't translate* keys are listed as not counted. With `--fail-under 100`, exit code 1 when any catalog/locale is below 100% (approved + needs review, or approved only); the failing catalogs are printed after the table. |
 | `accept [--key …] [--locale …]` | Mark translations as matching the current source text. |
 | `doctor` | Environment and configuration checks. |
 | `init [--model …] [--force] [--allow-remote]` | Create `.l10n-agent.yml` and record fingerprints for existing translations. Infers the key style and depth from existing manual keys. `--allow-remote` writes `allowRemote: true` for a remote endpoint or `:cloud` model. |
@@ -130,15 +132,16 @@ All commands accept `--path <project root>` (default: current directory). `--for
 | L10N103 | stale-translation | warning | Source text changed since the translation was made |
 | L10N104 | format-mismatch | error | Translation's format specifiers differ from the source by argument index or type (reordering with `%2$@` is fine) |
 | L10N105 | missing-comment | info | Key without a translator comment |
-| L10N106 | unused-key | info | Xcode marked the key stale, or no Swift file of the project references a manual key: not as a literal, a generated symbol, an interpolated prefix (`"settings.\(name)"`) or a `keys.dynamicPrefixes` entry. `InfoPlist` and `AppShortcuts` tables are not checked. |
+| L10N106 | unused-key | info | Xcode marked the key stale, or no Swift file of the project references a manual key: not as a literal, a generated symbol, an interpolated prefix (`"settings.\(name)"`) or a `keys.dynamicPrefixes` entry. Only the Swift files of the catalog's own target count, plus Swift package code and files that see no catalog (shared code often holds keys the app looks up). `InfoPlist` and `AppShortcuts` tables are not checked. |
 | L10N107 | key-style | warning | Manual key violates the configured key style |
 | L10N108 | glossary | warning | Translation does not use the required glossary term (or one of its listed forms) |
 | L10N109 | untranslated-copy | info | Translation identical to the source |
 | L10N110 | symbol-collision | error | Keys generate the same or a reserved Swift symbol (Xcode build error) |
 | L10N111 | source-language | warning | Catalog `sourceLanguage` differs from the project |
 | L10N112 | catalog-plural-candidate | info | A catalog value counts something (`"%d accounts"`, `"%lld item(s)"`) but has no plural variation |
+| L10N113 | malformed-translation | warning | A translation is wrapped instead of being the text itself: a JSON object or array (`{"text":"…"}`) or a Markdown code fence where the source has none. `translate` rejects such model output. |
 
-Detection uses SwiftSyntax and an allowlist of user-facing APIs, so logging (`print`, `Logger`), asset names (`Image("logo")`), URLs, `UserDefaults` keys, queue and lock names (`DispatchQueue(label:)`) and dotted identifiers (`"com.example.queue"`) stay quiet. Before scanning a file, the tool indexes the whole project: functions with `LocalizedStringKey`/`LocalizedStringResource` parameters localize their literal arguments, and a property or function whose every use is a logging call (`logger.warning(issue.warningMessage)`) is not UI text. Code in `#if DEBUG`, `#Preview`, `PreviewProvider`, test files and generated files (a header saying "GENERATED … do not edit", `@generated` or "autogenerated") is skipped. `Text(verbatim:)` is treated as an intentional opt-out.
+Detection uses SwiftSyntax and an allowlist of user-facing APIs, so logging (`print`, `Logger`), asset names (`Image("logo")`), URLs, `UserDefaults` keys, queue and lock names (`DispatchQueue(label:)`) and dotted identifiers (`"com.example.queue"`) stay quiet. Before scanning a file, the tool indexes the whole project: functions with `LocalizedStringKey`/`LocalizedStringResource` parameters localize their literal arguments, and a property or function whose every use is a logging call (`logger.warning(issue.warningMessage)`) is not UI text. Code in `#if DEBUG`, `#Preview`, `PreviewProvider`, test files (including every file in a folder that only unit or UI test targets compile, read from the Xcode project), and generated files (a header saying "GENERATED … do not edit", `@generated` or "autogenerated") is skipped. `Text(verbatim:)` is treated as an intentional opt-out.
 
 ### Suppressing findings
 
@@ -212,7 +215,7 @@ or in `.mcp.json`:
 { "mcpServers": { "l10n-agent": { "command": "l10n-agent", "args": ["mcp"] } } }
 ```
 
-Tools: `l10n_lint`, `l10n_status`, `l10n_plan_fixes`, `l10n_apply_fixes`, `l10n_translate`, `l10n_set_translations`, `l10n_add_keys` (also `shouldTranslate: false` for *Don't translate* keys), `l10n_accept`, `l10n_migrate_strings`.
+Tools: `l10n_lint`, `l10n_status`, `l10n_plan_fixes`, `l10n_apply_fixes`, `l10n_translate`, `l10n_set_translations`, `l10n_add_keys` (also `shouldTranslate: false` for *Don't translate* keys), `l10n_accept`, `l10n_migrate_strings`, `l10n_remove_keys` (unused keys only; there is no force over MCP), `l10n_rename_key`. Arguments a tool does not declare are refused.
 
 An agent can lint, plan fixes, rename keys or improve comments in the plan, and apply it. It can then run the local translator or supply its own translations. Its translations are validated for placeholder parity, accepted only for target locales, and written as `needs_review`. All paths are confined to the project root, including through symlinks.
 
@@ -258,7 +261,7 @@ translator: { provider: ollama, model: qwen3, instructions: { de: "Use informal 
 
 **App with legacy `Localizable.strings`.** Run `l10n-agent migrate` to preview, then `l10n-agent migrate --apply --remove-legacy`. Every `<locale>.lproj/<Table>.strings` group becomes `<Table>.xcstrings` next to the `.lproj` folders:
 
-- values and the comment directly above each entry are kept, and other languages become `translated`
+- values are kept and other languages become `translated`; comments come from the comment directly above an entry, else the `comment:` of the `NSLocalizedString`/`String(localized:)` call in the target's code, else the comment heading its group of entries, else the section comment it is under (file titles and copyright headers are ignored)
 - `.stringsdict` plural rules become plural variations, or substitutions with the right `argNum`
 - semantic keys become manual keys (Xcode never marks them stale), and fingerprints are recorded
 - each file's parse is cross-checked against Foundation's own reader, and every value is verified in the catalog before anything is written
@@ -274,7 +277,7 @@ Projects with synchronized folders pick up the new catalogs automatically; other
 ## Breaking changes in this release
 
 - **`lint` fails on warnings by default.** `--fail-on` now defaults to `warning` (it was `error`). Unlocalized text and missing or stale translations make `lint` exit 1, so a CI step or build phase that ran `l10n-agent lint` without `|| true` starts failing. Pass `--fail-on error` for the old behavior, or `--fail-on off` to only report.
-- Fixes for text found only by an argument label or a variable name are now `needsReview`, so `fix --apply` skips them unless you add `--include-review` or confirm them in the plan.
+- Fixes for text found only by an argument label or a variable name, and for `NSError` `userInfo` messages, are now `needsReview`, so `fix --apply` skips them unless you add `--include-review` or confirm them in the plan.
 
 ## Upgrading from 0.3 (TypeScript, iOS + Android)
 

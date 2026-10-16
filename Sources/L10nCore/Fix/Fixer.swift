@@ -136,7 +136,9 @@ public struct Fixer {
                 } else {
                     if site.heuristic {
                         status = .needsReview
-                        reasons.append("found only by the name \(site.api); confirm it is shown to users")
+                        reasons.append(site.api.hasPrefix("userInfo[")
+                            ? "an NSError message; confirm the error is shown to users (errors that are only logged can stay as they are)"
+                            : "found only by the name \(site.api); confirm it is shown to users")
                     }
                     if placeholders.contains(where: { !$0.confident }) {
                         status = .needsReview

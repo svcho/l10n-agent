@@ -63,3 +63,43 @@ Each item gets a regression test.
 - Re-run on a throwaway copy of pangi `feature/string-catalogs` without its workarounds (no generated-file exclude, no ignore comments): the false positives from the report are gone, and the 2 real findings remain.
 - Independent review of the diff before pushing.
 - README, AGENTS.md, CHANGELOG and SKILL.md updated in the same change.
+
+## Rerun findings (R1–R11)
+
+These come from the pangi rerun on 11d69b6 (pangi PR #20, merged). They are fixed in a follow-up PR stacked on PR #3. Each fix gets a regression test.
+
+- **R1. Unused keys are counted per target.** A catalog's keys count as referenced only from Swift files whose catalog lookup includes that catalog (`Project.catalogURLs(forTable:file:)`); ambiguous files count for every candidate.
+- **R2. `keys remove` and `keys rename` commands** (CLI and MCP).
+  - Remove: refuses keys still referenced unless `--force`.
+  - Rename: moves the entry and its fingerprints. With `--update-code`, it also rewrites exact literal and generated-symbol references in the files that see the catalog.
+  - Both run under the lock as one transaction and check the key style and symbol collisions.
+- **R3. Key names for error messages.**
+  - `NSError` `userInfo` texts use the catalog's `error.` scope when it has one.
+  - Long phrases keep their first two and last meaningful words (`modelContainerInitialized`), not a cut-off prefix.
+- **R4. Version 0.5.0** (README, CHANGELOG, `--version`).
+- **R5. `status` reports keys without text** ("4 without text, not counted").
+- **R6. `migrate` comments** come, in order, from:
+  1. the comment directly above the entry
+  2. the `comment:` of `NSLocalizedString`/`String(localized:)` calls in the target's code
+  3. the comment heading the entry's block
+  4. the section comment the entry is under
+
+  File titles and copyright headers are ignored.
+- **R7. Test-target files from the pbxproj** (synchronized folders of unit and UI test targets) are skipped like test files.
+- **R8. `status --fail-under`** prints the failing catalogs and locales after the table, on stdout.
+- **R9. New rule L10N113 (malformed-translation, warning).**
+  - It flags a translation that is a JSON object or array (or wrapped in code fences) when the source is not.
+  - `translate` rejects such model output.
+- **R10. `set-translation --replace-approved`** is an explicit, CLI-only way to replace a broken approved translation. The result is written as `needs_review`.
+- **R11. `NSError` messages need review:** the scanner cannot tell whether the error is shown.
+
+An independent review of these fixes found more issues, all fixed with tests in `RerunRegressionTests`:
+- rename lost the source text of extracted keys
+- symbol and literal rewrites touched non-localization code
+- MCP rename-then-remove could delete used translations
+- remove accepted `InfoPlist` and extracted keys
+- nested test groups resolved wrongly
+- unrelated catalogs were rewritten
+- raw keys in `NSError` messages went unreported
+- migrate header and comment precedence
+- MCP accepted undeclared arguments

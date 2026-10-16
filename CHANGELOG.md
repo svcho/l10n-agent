@@ -2,6 +2,21 @@
 
 All notable changes to `l10n-agent` are documented here.
 
+## 0.5.0 — 2026-10-16
+
+Follow-up to the pangi rerun (R1–R11 in `docs/plan-trial-fixes.md`).
+
+- `l10n-agent keys remove` / `keys rename` (MCP `l10n_remove_keys`, `l10n_rename_key`): remove unused keys, or rename keys with their translations, review states, source text and fingerprints. Renames of keys that code uses need `--update-code`, which rewrites only localization lookups. Remove refuses extracted and `InfoPlist`/`AppShortcuts` keys without `--force`, and MCP has no force.
+- New rule L10N113 (malformed-translation): JSON-wrapped or code-fenced translations; `translate` rejects such model output.
+- `set-translation --replace-approved` replaces a broken approved plain value (written as `needs_review`).
+- L10N106 counts references per target, so a key used only by another target's catalog is reported.
+- Files that only test targets compile (pbxproj synchronized folders) are not scanned.
+- `migrate` keeps more comments: group comments apply to their block, then `comment:` from code, then section comments; file titles are skipped. On pangi it now keeps nearly as many comments as a hand-written script.
+- `NSError` messages need review before fixing, and use the catalog's `error.` scope; long phrases keep their last word in key names.
+- `status` lists keys without text and *Don't translate* keys as not counted, and `--fail-under` prints the failing catalogs.
+- MCP tools refuse arguments they do not declare.
+- `--version` reports 0.5.0.
+
 ## 0.4.0 — 2026-10-09
 
 Rewrite in Swift, Apple platforms only. The String Catalog (`.xcstrings`) is now the source of truth; the TypeScript CLI, the `l10n/` JSON store and Android support are removed. See `docs/audit-and-apple-redesign.md` for the reasons (lossy round trips, placeholder argument numbering, `sync --locale` deleting other locales, among others).

@@ -16,7 +16,7 @@ description: Localize Xcode (iOS/macOS) apps with l10n-agent. Use when adding or
 ## Loop
 
 0. **Legacy projects**: if the app still has `.lproj/*.strings`, run `l10n_migrate_strings` (or `l10n-agent migrate`, then `--apply --remove-legacy`) first.
-1. **Lint**: `l10n_lint` (or `l10n-agent lint --format json`). Code findings: L10N001 unlocalized, L10N002 English text used as key, L10N003 concatenation, L10N004 missing key, L10N006 letterless literal to mark Don't translate. Catalog findings: L10N101 missing translation, L10N103 stale, L10N104 format mismatch, L10N106 unused key, L10N110 symbol collision, L10N112 value that needs a plural variation. The CLI exits 1 on warnings; `l10n-agent status --fail-under 100` checks coverage.
+1. **Lint**: `l10n_lint` (or `l10n-agent lint --format json`). Code findings: L10N001 unlocalized, L10N002 English text used as key, L10N003 concatenation, L10N004 missing key, L10N006 letterless literal to mark Don't translate. Catalog findings: L10N101 missing translation, L10N103 stale, L10N104 format mismatch, L10N106 unused key (remove with `l10n_remove_keys` / `l10n-agent keys remove`), L10N110 symbol collision, L10N112 value that needs a plural variation, L10N113 translation wrapped in JSON or a code fence. The CLI exits 1 on warnings; `l10n-agent status --fail-under 100` checks coverage.
 2. **Plan fixes**: `l10n_plan_fixes` (or `l10n-agent fix --format json --plan-out plan.json`). Review every item:
    - `key`: semantic and stable (`<screen>.<thing>.<role>`, e.g. `settings.notifications.title`). Never derive keys from whole sentences. Reuse `common.*` keys for generic words like Cancel/OK/Done.
    - `comment`: tell translators where the text appears and what each placeholder means.
@@ -44,7 +44,7 @@ Do not build UI text with `+` or `String(format:)`; use one localized string wit
 ## Rules
 
 - Never change translations in state `translated`; they were approved by a human.
-- Do not edit `.xcstrings` by hand when a tool can do it; the tools keep Xcode's exact formatting.
+- Do not edit `.xcstrings` by hand when a tool can do it; the tools keep Xcode's exact formatting. Rename keys with `l10n_rename_key` (`update_code: true` also fixes the code).
 - `.l10n-agent/fingerprints.json` must be committed with catalog changes.
 - Suppress intentional non-localized text with `// l10n-agent:ignore L10N001` and a short reason.
 - Literals without text (`Text("\(count)")`) need no translation: fix L10N006 (or `l10n_add_keys` with `shouldTranslate: false`) marks them Don't translate.
