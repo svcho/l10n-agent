@@ -58,7 +58,8 @@ public enum KeyStyle: String, Codable, Sendable, CaseIterable {
     /// Compiled once per style; `matches` runs for every key of every catalog.
     private static let compiled: [KeyStyle: (first: NSRegularExpression, later: NSRegularExpression)] = Dictionary(
         uniqueKeysWithValues: allCases.map { style in
-            (style, (try! NSRegularExpression(pattern: "^\(style.segmentPattern)$"), try! NSRegularExpression(pattern: "^\(style.laterSegmentPattern)$")))
+            // `\A…\z`: `$` would also accept a trailing newline.
+            (style, (try! NSRegularExpression(pattern: "\\A\(style.segmentPattern)\\z"), try! NSRegularExpression(pattern: "\\A\(style.laterSegmentPattern)\\z")))
         }
     )
 

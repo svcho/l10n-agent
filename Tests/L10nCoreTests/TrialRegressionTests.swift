@@ -306,6 +306,7 @@ struct TrialRegressionTests {
         #expect(policy.violations(for: "mac.settings.autoLock.15min").isEmpty)
         #expect(!policy.violations(for: "15min.settings").isEmpty)
         #expect(!KeyPolicy(style: .dottedLower).violations(for: "settings.autoLock").isEmpty)
+        #expect(!policy.violations(for: "settings.title\n").isEmpty, "a trailing newline is not part of a valid segment")
     }
 
     // MARK: 12. Glossary forms and translator instructions
@@ -783,6 +784,8 @@ struct TrialRegressionTests {
     }
 
     @Test func failedLegacyDeletesAreReportedNotThrown() throws {
+        // Folder permissions do not stop root, so the delete cannot be made to fail.
+        guard getuid() != 0 else { return }
         let root = try TestSupport.makeProject(["App/en.lproj/Localizable.strings": "\"a.title\" = \"A\";\n"])
         let folder = root.appendingPathComponent("App/en.lproj")
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
