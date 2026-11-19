@@ -915,19 +915,23 @@ public final class TranslationEngine: @unchecked Sendable {
     // MARK: Accept
 
     /// Marks current translations as matching the current source (after a human reviewed them).
-    public func accept(keys: [String]?, locales: [String]?) throws -> Int {
+    /// `catalog` limits the update to one discovered catalog (project-relative path).
+    public func accept(keys: [String]?, locales: [String]?, catalog: String? = nil) throws -> Int {
         try ProjectLock.withLock(root: project.root) {
-            try acceptLocked(keys: keys, locales: locales)
+            try acceptLocked(keys: keys, locales: locales, catalog: catalog)
         }
     }
 
     /// `accept` for callers that already hold the project lock.
-    func acceptLocked(keys: [String]?, locales: [String]?) throws -> Int {
+    func acceptLocked(keys: [String]?, locales: [String]?, catalog: String? = nil) throws -> Int {
         do {
+            // Validate the scope before loading fingerprints or changing anything.
+            let scope = try catalog.map { try Self.acceptScope($0, project: project) }
             var loaded = try load(TranslateOptions(locales: locales))
             var count = 0
             let keyFilter = keys.map { Set($0.map(ByteKey.init)) }
-            for path in loaded.order {
+            let paths = scope.map { [$0] } ?? loaded.order
+            for path in paths {
                 guard let catalog = loaded.catalogs[path] else { continue }
                 for (key, entry) in catalog.entries {
                     if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }
@@ -943,6 +947,24 @@ public final class TranslationEngine: @unchecked Sendable {
             try loaded.fingerprints.save()
             return count
         }
+    }
+
+    /// Validates the raw `catalog` selector before it is normalized. Acceptance names a
+    /// catalog by its project-relative path only: an absolute path or a `..` component would
+    /// address a discovered catalog by a spelling the project does not use.
+    ///
+    /// The check reads UTF-8 bytes: `String` comparisons work on grapheme clusters, so a
+    /// combining mark can hide a `/` or a `..` component from `hasPrefix`/`split`.
+    private static func acceptScope(_ catalog: String, project: Project) throws -> String {
+        let bytes = Array(catalog.utf8)
+        let slash = UInt8(ascii: "/")
+        let parent = Array("..".utf8)
+        let isAbsolute = bytes.first == slash
+        let hasParentComponent = bytes.split(separator: slash).contains { $0.elementsEqual(parent) }
+        guard !isAbsolute, !hasParentComponent else {
+            throw L10nError.invalidArgument("\(catalog) is not a project-relative String Catalog path; pass a project-relative .xcstrings path without \"..\" components")
+        }
+        return try KeysCommand.resolveCatalogPath(catalog, project: project)
     }
 }
 

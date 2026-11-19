@@ -276,6 +276,259 @@ struct TranslationTests {
         // Several items: ids must match.
         #expect(TranslationEngine.parseResponse(#"{"translations":[{"id":"37","text":"Hallo"}]}"#, expecting: [unit, unit])["1"] == nil)
     }
+
+    // MARK: Catalog scope
+
+    /// Two targets that share `color.name.blue`, plus a second iOS key and a French
+    /// translation, so the catalog, key and locale selectors can be told apart.
+    func twoCatalogProject() throws -> (URL, Project) {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de, fr]\n",
+            "iOS/Localizable.xcstrings": TestSupport.catalogJSON([
+                "color.name.blue": TestSupport.manual("Blue", translations: ["de": TestSupport.unit("Blau"), "fr": TestSupport.unit("Bleu")]),
+                "color.name.red": TestSupport.manual("Red", translations: ["de": TestSupport.unit("Rot")]),
+            ]),
+            "Mac/Localizable.xcstrings": TestSupport.catalogJSON([
+                "color.name.blue": TestSupport.manual("Blue", translations: ["de": TestSupport.unit("Blau")]),
+            ]),
+        ])
+        return (root, try Project.discover(root: root))
+    }
+
+    /// Rewrites the English source of `values`, leaving every translation as written.
+    func editSource(_ root: URL, _ path: String, _ values: [String: String]) throws {
+        let url = root.appendingPathComponent(path)
+        var catalog = try StringCatalog.load(url)
+        for (key, value) in values {
+            var entry = catalog.entry(key)!
+            entry.setLocalization("en", LocalizationNode(unit: StringUnit(state: "translated", value: value)))
+            catalog.setEntry(key, entry)
+        }
+        try catalog.write()
+    }
+
+    func bytes(_ root: URL, _ path: String) throws -> Data {
+        try Data(contentsOf: root.appendingPathComponent(path))
+    }
+
+    /// `catalog|key|locale` for every fingerprint that differs between two stores.
+    func changedFingerprints(_ before: FingerprintStore, _ after: FingerprintStore) -> [String] {
+        var changed: [String] = []
+        for catalog in Set(before.entries.keys).union(after.entries.keys) {
+            let keys = Set(before.entries[catalog].map { Array($0.keys) } ?? []).union(after.entries[catalog].map { Array($0.keys) } ?? [])
+            for key in keys {
+                let locales = Set(before.entries[catalog]?[key].map { Array($0.keys) } ?? []).union(after.entries[catalog]?[key].map { Array($0.keys) } ?? [])
+                for locale in locales where before.entries[catalog]?[key]?[locale] != after.entries[catalog]?[key]?[locale] {
+                    changed.append("\(catalog)|\(key.string)|\(locale)")
+                }
+            }
+        }
+        return changed.sorted()
+    }
+
+    /// L10N103 findings as `file|key|locales`, order-independent.
+    func staleFindings(_ project: Project) throws -> Set<String> {
+        let report = try Linter(project: project).run(LintOptions(rules: ["L10N103"], code: false))
+        return Set(report.diagnostics.map { "\($0.file)|\($0.key ?? "")|\(($0.locales ?? []).joined(separator: ","))" })
+    }
+
+    /// Asserts `accept` refuses `catalog` with an `invalidArgument` message that names the selector
+    /// and `contains`, and that the refusal leaves `fingerprints.json` byte-identical.
+    private func expectRejected(_ catalog: String, contains: String, engine: TranslationEngine, root: URL) throws {
+        // Compare the raw file: re-encoding through FingerprintStore could hide a rewrite.
+        let before = try Data(contentsOf: FingerprintStore.path(root: root))
+        var message: String?
+        do {
+            _ = try engine.accept(keys: ["color.name.blue"], locales: ["de"], catalog: catalog)
+            Issue.record("\(catalog) was accepted")
+        } catch let error as L10nError {
+            if case .invalidArgument(let text) = error {
+                message = text
+            } else {
+                Issue.record("\(catalog): unexpected \(error)")
+            }
+        } catch {
+            Issue.record("\(catalog): unexpected \(error)")
+        }
+        #expect(message?.contains(catalog) == true, "\(message ?? "no message")")
+        #expect(message?.contains(contains) == true, "\(message ?? "no message")")
+        #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == before, "\(catalog) rewrote fingerprints.json")
+    }
+
+    @Test func scopedAcceptUpdatesOnlyTheSelectedCatalog() throws {
+        let (root, project) = try twoCatalogProject()
+        #expect(try TranslationEngine(project: project).accept(keys: nil, locales: nil) == 4)
+
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue", "color.name.red": "Crimson"])
+        try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+
+        // Both targets share the German key; iOS also has a French translation and a second key.
+        #expect(try staleFindings(project) == [
+            "iOS/Localizable.xcstrings|color.name.blue|de,fr",
+            "iOS/Localizable.xcstrings|color.name.red|de",
+            "Mac/Localizable.xcstrings|color.name.blue|de",
+        ])
+
+        let before = try FingerprintStore.load(root: root)
+        let iosBytes = try bytes(root, "iOS/Localizable.xcstrings")
+        let macBytes = try bytes(root, "Mac/Localizable.xcstrings")
+
+        #expect(try TranslationEngine(project: project).accept(keys: ["color.name.blue"], locales: ["de"], catalog: "iOS/Localizable.xcstrings") == 1)
+
+        let after = try FingerprintStore.load(root: root)
+        #expect(changedFingerprints(before, after) == ["iOS/Localizable.xcstrings|color.name.blue|de"])
+        let ios = try StringCatalog.load(root.appendingPathComponent("iOS/Localizable.xcstrings"))
+        let source = ios.entry("color.name.blue")!.sourceNode(key: "color.name.blue", sourceLanguage: ios.sourceLanguage)
+        #expect(after.fingerprint(catalog: "iOS/Localizable.xcstrings", key: "color.name.blue", locale: "de") == FingerprintStore.sourceFingerprint(source))
+
+        // Only the reviewed tuple is cleared: the Mac target, the French translation and the
+        // second iOS key still need review.
+        #expect(try staleFindings(try Project.discover(root: root)) == [
+            "iOS/Localizable.xcstrings|color.name.blue|fr",
+            "iOS/Localizable.xcstrings|color.name.red|de",
+            "Mac/Localizable.xcstrings|color.name.blue|de",
+        ])
+
+        // Acceptance records review against the source; Xcode keeps owning the catalogs.
+        #expect(try bytes(root, "iOS/Localizable.xcstrings") == iosBytes)
+        #expect(try bytes(root, "Mac/Localizable.xcstrings") == macBytes)
+    }
+
+    @Test func scopedAcceptIsIdempotentAndEmptyMatchesUpdateNothing() throws {
+        let (root, project) = try twoCatalogProject()
+        _ = try TranslationEngine(project: project).accept(keys: nil, locales: nil)
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+        try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+
+        let engine = TranslationEngine(project: try Project.discover(root: root))
+        #expect(try engine.accept(keys: ["color.name.blue"], locales: ["de"], catalog: "iOS/Localizable.xcstrings") == 1)
+        let settled = try FingerprintStore.load(root: root).serialized()
+        let iosBytes = try bytes(root, "iOS/Localizable.xcstrings")
+        let macBytes = try bytes(root, "Mac/Localizable.xcstrings")
+
+        #expect(try engine.accept(keys: ["color.name.blue"], locales: ["de"], catalog: "iOS/Localizable.xcstrings") == 0)
+        #expect(try FingerprintStore.load(root: root).serialized() == settled)
+        #expect(try bytes(root, "iOS/Localizable.xcstrings") == iosBytes)
+        #expect(try bytes(root, "Mac/Localizable.xcstrings") == macBytes)
+
+        // A valid catalog with no matching key or locale is a successful no-op.
+        #expect(try engine.accept(keys: ["color.name.green"], locales: ["de"], catalog: "iOS/Localizable.xcstrings") == 0)
+        #expect(try engine.accept(keys: ["color.name.blue"], locales: ["ja"], catalog: "iOS/Localizable.xcstrings") == 0)
+        #expect(try FingerprintStore.load(root: root).serialized() == settled)
+    }
+
+    @Test func scopedAcceptRejectsPathsThatAreNotDiscoveredCatalogs() throws {
+        let (root, project) = try twoCatalogProject()
+        _ = try TranslationEngine(project: project).accept(keys: nil, locales: nil)
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+        try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+
+        // A catalog outside the project, reachable through a symlink inside it.
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("l10n-agent-outside-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let outsideCatalog = outside.appendingPathComponent("Outside.xcstrings")
+        try bytes(root, "iOS/Localizable.xcstrings").write(to: outsideCatalog)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("Linked.xcstrings"), withDestinationURL: outsideCatalog)
+
+        let fingerprintBytes = try Data(contentsOf: FingerprintStore.path(root: root))
+        let iosBytes = try bytes(root, "iOS/Localizable.xcstrings")
+        let macBytes = try bytes(root, "Mac/Localizable.xcstrings")
+        let engine = TranslationEngine(project: try Project.discover(root: root))
+
+        // Only nested files share this basename, so the filename is not a full relative path.
+        try expectRejected("Localizable.xcstrings", contains: "discovered", engine: engine, root: root)
+        try expectRejected("Missing.xcstrings", contains: "discovered", engine: engine, root: root)
+        // The selector is checked before it is normalized, so neither a `..` component nor an
+        // absolute path can name a discovered catalog by a spelling the project does not use.
+        try expectRejected("../Outside.xcstrings", contains: "project-relative", engine: engine, root: root)
+        try expectRejected("iOS/../Mac/Localizable.xcstrings", contains: "project-relative", engine: engine, root: root)
+        try expectRejected(root.appendingPathComponent("Mac/Localizable.xcstrings").path, contains: "project-relative", engine: engine, root: root)
+        try expectRejected("Linked.xcstrings", contains: "outside the project root", engine: engine, root: root)
+
+        #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == fingerprintBytes)
+        #expect(try bytes(root, "iOS/Localizable.xcstrings") == iosBytes)
+        #expect(try bytes(root, "Mac/Localizable.xcstrings") == macBytes)
+    }
+
+    /// `String` comparisons work on grapheme clusters, so a combining mark can hide a `/` or a
+    /// `..` component from `hasPrefix`/`split` while the path still standardizes to a
+    /// discovered catalog. The guard reads UTF-8 bytes instead.
+    @Test func scopedAcceptRejectsParentComponentsHiddenByCombiningMarks() throws {
+        let (root, project) = try twoCatalogProject()
+        _ = try TranslationEngine(project: project).accept(keys: nil, locales: nil)
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+        try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+
+        // U+0600 is a prepend character: it joins the following `/` into one grapheme cluster,
+        // so a `Character` split sees `iOS\u{0600}/..` and misses the `..` component, while
+        // standardization is lexical and still resolves the path to the Mac catalog.
+        let hiddenParent = "iOS\u{0600}/../Mac/Localizable.xcstrings"
+        #expect(hiddenParent.split(separator: "/").map(String.init) == ["iOS\u{0600}/..", "Mac", "Localizable.xcstrings"])
+        // A combining mark after the leading `/` hides the slash from `hasPrefix("/")`.
+        let hiddenSlash = "/\u{0301}tmp/Localizable.xcstrings"
+        #expect(!hiddenSlash.hasPrefix("/"))
+
+        let engine = TranslationEngine(project: project)
+        for catalog in [hiddenParent, hiddenSlash] {
+            try expectRejected(catalog, contains: "project-relative", engine: engine, root: root)
+        }
+
+        // Nothing was acknowledged: both catalogs still report their stale translations.
+        #expect(try staleFindings(project) == [
+            "iOS/Localizable.xcstrings|color.name.blue|de,fr",
+            "Mac/Localizable.xcstrings|color.name.blue|de",
+        ])
+    }
+
+    @Test func scopedAcceptAddressesARootLevelCatalogByFilename() throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "Localizable.xcstrings": TestSupport.catalogJSON([
+                "color.name.blue": TestSupport.manual("Blue", translations: ["de": TestSupport.unit("Blau")]),
+            ]),
+            "iOS/Localizable.xcstrings": TestSupport.catalogJSON([
+                "color.name.blue": TestSupport.manual("Blue", translations: ["de": TestSupport.unit("Blau")]),
+            ]),
+        ])
+        #expect(try TranslationEngine(project: try Project.discover(root: root)).accept(keys: nil, locales: nil) == 2)
+        try editSource(root, "Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+
+        let project = try Project.discover(root: root)
+        #expect(try TranslationEngine(project: project).accept(keys: ["color.name.blue"], locales: ["de"], catalog: "Localizable.xcstrings") == 1)
+        #expect(try staleFindings(project) == ["iOS/Localizable.xcstrings|color.name.blue|de"])
+    }
+
+    @Test func unscopedAcceptAndInitStayProjectWide() async throws {
+        let (root, project) = try twoCatalogProject()
+        _ = try TranslationEngine(project: project).accept(keys: nil, locales: nil)
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue", "color.name.red": "Crimson"])
+        try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+
+        // Key and locale filters still span every catalog when no scope is given.
+        #expect(try TranslationEngine(project: try Project.discover(root: root)).accept(keys: ["color.name.blue"], locales: ["de"]) == 2)
+        #expect(try staleFindings(try Project.discover(root: root)) == [
+            "iOS/Localizable.xcstrings|color.name.blue|fr",
+            "iOS/Localizable.xcstrings|color.name.red|de",
+        ])
+
+        // No filters at all: every matching catalog is updated.
+        #expect(try TranslationEngine(project: try Project.discover(root: root)).accept(keys: nil, locales: nil) == 2)
+        #expect(try staleFindings(try Project.discover(root: root)).isEmpty)
+
+        // init seeds every catalog when no scope is given.
+        let (initRoot, _) = try twoCatalogProject()
+        let iosStart = try bytes(initRoot, "iOS/Localizable.xcstrings")
+        let macStart = try bytes(initRoot, "Mac/Localizable.xcstrings")
+        let result = try await InitCommand.run(root: initRoot)
+        #expect(result.baselined == 4)
+        let store = try FingerprintStore.load(root: initRoot)
+        #expect(store.entries["iOS/Localizable.xcstrings"]?.count == 2)
+        #expect(store.entries["Mac/Localizable.xcstrings"]?.count == 1)
+        #expect(store.fingerprint(catalog: "iOS/Localizable.xcstrings", key: "color.name.blue", locale: "fr") != nil)
+        #expect(try bytes(initRoot, "iOS/Localizable.xcstrings") == iosStart)
+        #expect(try bytes(initRoot, "Mac/Localizable.xcstrings") == macStart)
+    }
 }
 
 actor Counter {

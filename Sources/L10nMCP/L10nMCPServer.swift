@@ -163,8 +163,12 @@ public struct L10nMCPServer: Sendable {
         ),
         Tool(
             name: "l10n_accept",
-            description: "Mark translations as up to date with the current source text (clears L10N103 stale findings) after they were reviewed.",
-            inputSchema: schema(["keys": stringArray, "locales": stringArray]),
+            description: "Mark translations as up to date with the current source text (clears L10N103 stale findings) after they were reviewed. Set catalog to acknowledge one String Catalog only (path relative to the project root); without it every matching catalog is updated.",
+            inputSchema: schema([
+                "keys": stringArray,
+                "locales": stringArray,
+                "catalog": ["type": "string", "description": "Only this String Catalog (path relative to the project root). Default: every matching catalog."],
+            ]),
             annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         ),
     ]
@@ -177,7 +181,7 @@ public struct L10nMCPServer: Sendable {
     struct TranslateInput: Decodable { var locales: [String]?; var keys: [String]?; var dry_run: Bool? }
     struct SetTranslationsInput: Decodable { var translations: [ProvidedTranslation] }
     struct AddKeysInput: Decodable { var keys: [NewKey] }
-    struct AcceptInput: Decodable { var keys: [String]?; var locales: [String]? }
+    struct AcceptInput: Decodable { var keys: [String]?; var locales: [String]?; var catalog: String? }
     struct MigrateInput: Decodable { var apply: Bool?; var remove_legacy: Bool? }
     struct RemoveKeysInput: Decodable { var keys: [String]; var catalog: String? }
     struct RenameKeyInput: Decodable { var from: String; var to: String; var catalog: String?; var update_code: Bool? }
@@ -191,6 +195,11 @@ public struct L10nMCPServer: Sendable {
             if !unknown.isEmpty {
                 return failure("Unknown argument(s) for \(name): \(unknown.sorted().joined(separator: ", "))")
             }
+        }
+        // `catalog` is optional, but an explicit null is not the same as omitting it: decoding
+        // would turn both into nil and silently widen acceptance to every catalog.
+        if name == "l10n_accept", let catalog = arguments["catalog"], catalog.stringValue == nil {
+            return failure("catalog must be a string when supplied; omit it to accept every matching catalog")
         }
         guard Self.mutatingTools.contains(name) else {
             return await perform(name: name, arguments: arguments)
@@ -259,7 +268,7 @@ public struct L10nMCPServer: Sendable {
                 return success(try AddKeysCommand.run(project: project, keys: input.keys))
             case "l10n_accept":
                 let input = try decode(AcceptInput.self, arguments)
-                let count = try TranslationEngine(project: project).accept(keys: input.keys, locales: input.locales)
+                let count = try TranslationEngine(project: project).accept(keys: input.keys, locales: input.locales, catalog: input.catalog)
                 return .init(content: [.text(text: "{\"updated\": \(count)}", annotations: nil, _meta: nil)], isError: false)
             default:
                 return failure("Unknown tool \(name)")

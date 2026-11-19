@@ -133,4 +133,139 @@ struct MCPServerTests {
         let (unknown, isError) = try await client.callTool(name: "l10n_set_translations", arguments: ["translations": [["key": "home.title", "locale": "de", "value": "Startseite"]], "replace_approved": true])
         #expect(isError == true && text(unknown).contains("Unknown argument(s)"))
     }
+
+    // MARK: Catalog scope
+
+    struct AcceptResponse: Decodable { var updated: Int }
+
+    /// Two targets that share `color.name.blue` and its approved German translation.
+    func makeTwoCatalogProject() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("l10n-mcp-scope-\(UUID().uuidString)")
+        let catalog = #"{"sourceLanguage":"en","strings":{"color.name.blue":{"comment":"Color","extractionState":"manual","localizations":{"de":{"stringUnit":{"state":"translated","value":"Blau"}},"en":{"stringUnit":{"state":"translated","value":"Blue"}}}}},"version":"1.1"}"#
+        for (path, content) in [".l10n-agent.yml": "locales: [de]\n", "iOS/Localizable.xcstrings": catalog, "Mac/Localizable.xcstrings": catalog] {
+            let url = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        }
+        return root
+    }
+
+    /// Seeds fingerprints, then changes both English sources so both German translations are stale.
+    func makeStaleTwoCatalogProject() async throws -> (URL, Client) {
+        let root = try makeTwoCatalogProject()
+        let client = try await connect(root: root)
+        let (seed, seedError) = try await client.callTool(name: "l10n_accept")
+        #expect(seedError == false, "\(text(seed))")
+        for target in ["iOS", "Mac"] {
+            let url = root.appendingPathComponent("\(target)/Localizable.xcstrings")
+            let source = try String(contentsOf: url, encoding: .utf8)
+            try source.replacingOccurrences(of: #""value":"Blue""#, with: #""value":"Deep Blue""#).write(to: url, atomically: true, encoding: .utf8)
+        }
+        return (root, client)
+    }
+
+    func bytes(_ root: URL, _ path: String) throws -> Data {
+        try Data(contentsOf: root.appendingPathComponent(path))
+    }
+
+    @Test func acceptScopeIsAdvertisedAndLimitsUpdatesToOneCatalog() async throws {
+        let (root, client) = try await makeStaleTwoCatalogProject()
+
+        let (tools, _) = try await client.listTools()
+        let accept = try #require(tools.first { $0.name == "l10n_accept" })
+        guard case .object(let schema) = accept.inputSchema,
+              case .object(let properties)? = schema["properties"],
+              case .object(let catalog)? = properties["catalog"],
+              case .string(let type)? = catalog["type"]
+        else {
+            Issue.record("l10n_accept does not declare a string catalog property")
+            return
+        }
+        #expect(type == "string")
+        if case .array(let required)? = schema["required"] {
+            let names = required.compactMap { value -> String? in
+                if case .string(let name) = value { return name }
+                return nil
+            }
+            #expect(!names.contains("catalog"), "catalog stays optional")
+        }
+
+        let iosBytes = try bytes(root, "iOS/Localizable.xcstrings")
+        let macBytes = try bytes(root, "Mac/Localizable.xcstrings")
+
+        let (content, isError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "catalog": "iOS/Localizable.xcstrings", "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(isError == false, "\(text(content))")
+        #expect(try JSONDecoder().decode(AcceptResponse.self, from: Data(text(content).utf8)).updated == 1)
+        #expect(try bytes(root, "iOS/Localizable.xcstrings") == iosBytes)
+        #expect(try bytes(root, "Mac/Localizable.xcstrings") == macBytes)
+
+        // The Mac target still needs review.
+        let (lintContent, _) = try await client.callTool(name: "l10n_lint", arguments: ["scope": "catalogs", "rules": ["L10N103"]])
+        let report = try JSONDecoder().decode(LintReport.self, from: Data(text(lintContent).utf8))
+        #expect(report.diagnostics.map(\.file) == ["Mac/Localizable.xcstrings"])
+        #expect(report.diagnostics.first?.key == "color.name.blue")
+        #expect(report.diagnostics.first?.locales == ["de"])
+
+        // Repeating the scoped call changes nothing.
+        let settled = try FingerprintStore.load(root: root).serialized()
+        let (repeatContent, repeatError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "catalog": "iOS/Localizable.xcstrings", "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(repeatError == false)
+        #expect(try JSONDecoder().decode(AcceptResponse.self, from: Data(text(repeatContent).utf8)).updated == 0)
+        #expect(try FingerprintStore.load(root: root).serialized() == settled)
+
+        // A basename that only matches nested catalogs is refused before anything changes.
+        let (badContent, badError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "catalog": "Localizable.xcstrings", "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(badError == true)
+        #expect(text(badContent).contains("Localizable.xcstrings"))
+        #expect(text(badContent).contains("discovered"))
+        #expect(try FingerprintStore.load(root: root).serialized() == settled)
+
+        let (outsideContent, outsideError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "catalog": "../Outside.xcstrings", "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(outsideError == true)
+        #expect(text(outsideContent).contains("project-relative"))
+        #expect(try FingerprintStore.load(root: root).serialized() == settled)
+
+        // Without a catalog the remaining German record is updated too.
+        let (allContent, allError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(allError == false)
+        #expect(try JSONDecoder().decode(AcceptResponse.self, from: Data(text(allContent).utf8)).updated == 1)
+        let (afterContent, _) = try await client.callTool(name: "l10n_lint", arguments: ["scope": "catalogs", "rules": ["L10N103"]])
+        let after = try JSONDecoder().decode(LintReport.self, from: Data(text(afterContent).utf8))
+        #expect(after.diagnostics.isEmpty)
+
+        // Undeclared arguments are still refused.
+        let (unknownContent, unknownError) = try await client.callTool(name: "l10n_accept", arguments: ["force": true])
+        #expect(unknownError == true)
+        #expect(text(unknownContent).contains("Unknown argument(s)"))
+    }
+
+    @Test func acceptRefusesAnExplicitNullCatalog() async throws {
+        let (root, client) = try await makeStaleTwoCatalogProject()
+        let fingerprints = try bytes(root, ".l10n-agent/fingerprints.json")
+
+        // An explicit null is not omission: it must not widen acceptance to every catalog.
+        let (content, isError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "catalog": .null, "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(isError == true)
+        #expect(text(content).contains("catalog"))
+        #expect(text(content).contains("string"))
+        #expect(try bytes(root, ".l10n-agent/fingerprints.json") == fingerprints)
+
+        // Both German translations still need review.
+        let (lintContent, _) = try await client.callTool(name: "l10n_lint", arguments: ["scope": "catalogs", "rules": ["L10N103"]])
+        let report = try JSONDecoder().decode(LintReport.self, from: Data(text(lintContent).utf8))
+        #expect(Set(report.diagnostics.map(\.file)) == ["iOS/Localizable.xcstrings", "Mac/Localizable.xcstrings"])
+        #expect(report.diagnostics.allSatisfy { $0.key == "color.name.blue" && $0.locales == ["de"] })
+    }
 }
