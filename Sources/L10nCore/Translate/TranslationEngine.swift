@@ -952,8 +952,16 @@ public final class TranslationEngine: @unchecked Sendable {
     /// Validates the raw `catalog` selector before it is normalized. Acceptance names a
     /// catalog by its project-relative path only: an absolute path or a `..` component would
     /// address a discovered catalog by a spelling the project does not use.
+    ///
+    /// The check reads UTF-8 bytes: `String` comparisons work on grapheme clusters, so a
+    /// combining mark can hide a `/` or a `..` component from `hasPrefix`/`split`.
     private static func acceptScope(_ catalog: String, project: Project) throws -> String {
-        guard !catalog.hasPrefix("/"), !catalog.split(separator: "/").contains("..") else {
+        let bytes = Array(catalog.utf8)
+        let slash = UInt8(ascii: "/")
+        let parent = Array("..".utf8)
+        let isAbsolute = bytes.first == slash
+        let hasParentComponent = bytes.split(separator: slash).contains { $0.elementsEqual(parent) }
+        guard !isAbsolute, !hasParentComponent else {
             throw L10nError.invalidArgument("\(catalog) is not a project-relative String Catalog path; pass a project-relative .xcstrings path without \"..\" components")
         }
         return try KeysCommand.resolveCatalogPath(catalog, project: project)

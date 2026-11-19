@@ -450,6 +450,51 @@ struct TranslationTests {
         #expect(try bytes(root, "Mac/Localizable.xcstrings") == macBytes)
     }
 
+    /// `String` comparisons work on grapheme clusters, so a combining mark can hide a `/` or a
+    /// `..` component from `hasPrefix`/`split` while the path still standardizes to a
+    /// discovered catalog. The guard reads UTF-8 bytes instead.
+    @Test func scopedAcceptRejectsParentComponentsHiddenByCombiningMarks() throws {
+        let (root, project) = try twoCatalogProject()
+        _ = try TranslationEngine(project: project).accept(keys: nil, locales: nil)
+        try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+        try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
+        let fingerprintBytes = try Data(contentsOf: FingerprintStore.path(root: root))
+
+        // U+0600 is a prepend character: it joins the following `/` into one grapheme cluster,
+        // so a `Character` split sees `iOS\u{0600}/..` and misses the `..` component, while
+        // standardization is lexical and still resolves the path to the Mac catalog.
+        let hiddenParent = "iOS\u{0600}/../Mac/Localizable.xcstrings"
+        #expect(hiddenParent.split(separator: "/").map(String.init) == ["iOS\u{0600}/..", "Mac", "Localizable.xcstrings"])
+        // A combining mark after the leading `/` hides the slash from `hasPrefix("/")`.
+        let hiddenSlash = "/\u{0301}tmp/Localizable.xcstrings"
+        #expect(!hiddenSlash.hasPrefix("/"))
+
+        for catalog in [hiddenParent, hiddenSlash] {
+            var message: String?
+            do {
+                _ = try TranslationEngine(project: project).accept(keys: ["color.name.blue"], locales: ["de"], catalog: catalog)
+                Issue.record("\(catalog) was accepted")
+            } catch let error as L10nError {
+                if case .invalidArgument(let text) = error {
+                    message = text
+                } else {
+                    Issue.record("\(catalog): unexpected \(error)")
+                }
+            } catch {
+                Issue.record("\(catalog): unexpected \(error)")
+            }
+            #expect(message?.contains("project-relative") == true, "\(message ?? "no message")")
+            // Compare the raw file: re-encoding through FingerprintStore could hide a rewrite.
+            #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == fingerprintBytes, "\(catalog) rewrote fingerprints.json")
+        }
+
+        // Nothing was acknowledged: both catalogs still report their stale translations.
+        #expect(try staleFindings(project) == [
+            "iOS/Localizable.xcstrings|color.name.blue|de,fr",
+            "Mac/Localizable.xcstrings|color.name.blue|de",
+        ])
+    }
+
     @Test func scopedAcceptAddressesARootLevelCatalogByFilename() throws {
         let root = try TestSupport.makeProject([
             ".l10n-agent.yml": "locales: [de]\n",

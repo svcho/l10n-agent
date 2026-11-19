@@ -39,7 +39,7 @@ l10n-agent accept --catalog pangi-apple/pangi/Localizable.xcstrings --key color.
 {"catalog":"pangi-apple/pangi/Localizable.xcstrings","keys":["color.name.blue"],"locales":["de"]}
 ```
 
-Catalog, key and locale selectors intersect. The path is relative to the project root (a root-level catalog by its filename); a filename that only matches nested catalogs is refused, and so is an absolute path or a `..` component. In MCP, `catalog` must be a string when supplied: omit it for project-wide acceptance, never pass `null`. Without `catalog`, every catalog with that key and locale is acknowledged. Never approve translations yourself; only record a review the user confirmed.
+Catalog, key and locale selectors intersect. The path is relative to the project root (a root-level catalog by its filename); a filename that only matches nested catalogs is refused, and so is an absolute path or a `..` component. In MCP, `catalog` must be a string when supplied: omit it to acknowledge every catalog with that key and locale, never pass `null`. Never approve translations yourself; only record a review the user confirmed.
 
 ## Writing new UI code
 
