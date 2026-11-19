@@ -67,6 +67,7 @@ Out of scope:
 - Translation is local-only. Non-localhost URLs and Ollama `:cloud` models need `translator.allowRemote: true` plus `L10N_AGENT_ALLOW_REMOTE=1` in the user's environment.
 - Mutating commands hold the `flock` project lock (`.l10n-agent/lock`); the kernel releases it on exit.
 - `.l10n-agent/fingerprints.json` is the only extra state. Comment edits do not make translations stale. A file that does not match the schema stops the command instead of being treated as empty.
+- `accept` writes only fingerprints, never catalogs. `--catalog` / MCP `catalog` limits it to one discovered catalog by its project-relative path (a root-level catalog by filename); catalog, key and locale selectors intersect, and omitting the scope keeps project-wide acceptance and `init` seeding.
 - MCP tools resolve every path inside the project root (symlinks resolved); provided translations are limited to target locales.
 - Tests stay offline: no live model calls. Tests that need Xcode tools are skipped when `xcrun` is unavailable.
 - Scanning uses a `ProjectIndex` of every project file: parameters declared `LocalizedStringKey`/`LocalizedStringResource` make literal arguments lookups (a `LocalizedStringKey` parameter is never rewritten) only when every same-named declaration with that label agrees, and properties or functions used only as arguments of logging calls (free logging functions, or `debug/info/warning/error/…` on a receiver named like a logger) are not UI text.

@@ -16,7 +16,7 @@ description: Localize Xcode (iOS/macOS) apps with l10n-agent. Use when adding or
 ## Loop
 
 0. **Legacy projects**: if the app still has `.lproj/*.strings`, run `l10n_migrate_strings` (or `l10n-agent migrate`, then `--apply --remove-legacy`) first.
-1. **Lint**: `l10n_lint` (or `l10n-agent lint --format json`). Code findings: L10N001 unlocalized, L10N002 English text used as key, L10N003 concatenation, L10N004 missing key, L10N006 letterless literal to mark Don't translate. Catalog findings: L10N101 missing translation, L10N103 stale, L10N104 format mismatch, L10N106 unused key (remove with `l10n_remove_keys` / `l10n-agent keys remove`), L10N110 symbol collision, L10N112 value that needs a plural variation, L10N113 translation wrapped in JSON or a code fence. The CLI exits 1 on warnings; `l10n-agent status --fail-under 100` checks coverage.
+1. **Lint**: `l10n_lint` (or `l10n-agent lint --format json`). Code findings: L10N001 unlocalized, L10N002 English text used as key, L10N003 concatenation, L10N004 missing key, L10N006 letterless literal to mark Don't translate. Catalog findings: L10N101 missing translation, L10N103 stale, L10N104 format mismatch, L10N106 unused key (remove with `l10n_remove_keys` / `l10n-agent keys remove`), L10N110 symbol collision, L10N112 value that needs a plural variation, L10N113 translation wrapped in JSON or a code fence. The CLI exits 1 on warnings; `l10n-agent status --fail-under 100` checks coverage. L10N103 means the source changed after the translation was made: once a human has reviewed it, record that with `l10n_accept` (see below).
 2. **Plan fixes**: `l10n_plan_fixes` (or `l10n-agent fix --format json --plan-out plan.json`). Review every item:
    - `key`: semantic and stable (`<screen>.<thing>.<role>`, e.g. `settings.notifications.title`). Never derive keys from whole sentences. Reuse `common.*` keys for generic words like Cancel/OK/Done.
    - `comment`: tell translators where the text appears and what each placeholder means.
@@ -26,6 +26,20 @@ description: Localize Xcode (iOS/macOS) apps with l10n-agent. Use when adding or
 3. **Apply**: `l10n_apply_fixes` with the (edited) plan, or `l10n-agent fix --plan plan.json --apply`. Re-run lint afterwards.
 4. **Translate**: either `l10n_translate` (local model; check `dry_run: true` first on large projects) or translate yourself with `l10n_set_translations` (CLI: `l10n-agent set-translation --key K --locale de --value "…"`). Keep every format specifier; use positional forms (`%2$lld … %1$@`) when word order changes. For plural keys provide all CLDR categories of the language.
 5. **Report**: summarize what changed and remind the user that translations are `needs_review` until approved in Xcode's String Catalog editor.
+
+## Acknowledging a reviewed stale translation (L10N103)
+
+Only after a human has reviewed the translation, record that review. When another target shares the key, scope the acknowledgement to the catalog that was reviewed, so the other target keeps its L10N103 finding:
+
+```bash
+l10n-agent accept --catalog pangi-apple/pangi/Localizable.xcstrings --key color.name.blue --locale de
+```
+
+```json
+{"catalog":"pangi-apple/pangi/Localizable.xcstrings","keys":["color.name.blue"],"locales":["de"]}
+```
+
+Catalog, key and locale selectors intersect. The path is relative to the project root (a root-level catalog by its filename); a filename that only matches nested catalogs is refused. Without `catalog`, every catalog with that key and locale is acknowledged. Never approve translations yourself; only record a review the user confirmed.
 
 ## Writing new UI code
 

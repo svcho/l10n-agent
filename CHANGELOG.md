@@ -2,6 +2,10 @@
 
 All notable changes to `l10n-agent` are documented here.
 
+## Unreleased
+
+- `l10n-agent accept --catalog <project-relative path>` and MCP `l10n_accept` `catalog`: acknowledge a reviewed translation in one String Catalog only, so the same key in another target keeps its L10N103 finding. Catalog, key and locale selectors intersect; without the scope, acceptance and `init` seeding stay project-wide.
+
 ## 0.5.0 — 2026-10-16
 
 Follow-up to the pangi rerun (R1–R11 in `docs/plan-trial-fixes.md`).

@@ -915,19 +915,23 @@ public final class TranslationEngine: @unchecked Sendable {
     // MARK: Accept
 
     /// Marks current translations as matching the current source (after a human reviewed them).
-    public func accept(keys: [String]?, locales: [String]?) throws -> Int {
+    /// `catalog` limits the update to one discovered catalog (project-relative path).
+    public func accept(keys: [String]?, locales: [String]?, catalog: String? = nil) throws -> Int {
         try ProjectLock.withLock(root: project.root) {
-            try acceptLocked(keys: keys, locales: locales)
+            try acceptLocked(keys: keys, locales: locales, catalog: catalog)
         }
     }
 
     /// `accept` for callers that already hold the project lock.
-    func acceptLocked(keys: [String]?, locales: [String]?) throws -> Int {
+    func acceptLocked(keys: [String]?, locales: [String]?, catalog: String? = nil) throws -> Int {
         do {
+            // Validate the scope before loading fingerprints or changing anything.
+            let scope = try catalog.map { try KeysCommand.resolveCatalogPath($0, project: project) }
             var loaded = try load(TranslateOptions(locales: locales))
             var count = 0
             let keyFilter = keys.map { Set($0.map(ByteKey.init)) }
-            for path in loaded.order {
+            let paths = scope.map { [$0] } ?? loaded.order
+            for path in paths {
                 guard let catalog = loaded.catalogs[path] else { continue }
                 for (key, entry) in catalog.entries {
                     if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }

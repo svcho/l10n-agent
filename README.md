@@ -60,7 +60,13 @@ The tool reads and writes `.xcstrings` files losslessly: unknown fields are kept
 
 Xcode does not flag translations of manual keys when their source text changes. `l10n-agent` keeps one small file, `.l10n-agent/fingerprints.json`, that records which source text each translation was made from. Commit it with your catalogs. Editing a key's comment does not make translations stale; editing its text does.
 
-After reviewing a translation whose source changed, run `l10n-agent accept --key <key>` (or edit the translation in Xcode and accept).
+After reviewing a translation whose source changed, run `l10n-agent accept --key <key>` (or edit the translation in Xcode and accept). When the same key exists in several targets, pass `--catalog` to acknowledge only the catalog you reviewed:
+
+```bash
+l10n-agent accept --catalog pangi-apple/pangi/Localizable.xcstrings --key color.name.blue --locale de
+```
+
+Catalog, key and locale selectors intersect. A catalog is named by its full path relative to the project root; a root-level catalog by its filename, which is its full relative path. A filename that only matches nested catalogs is refused. Without `--catalog`, acceptance stays project-wide.
 
 ### Keys and code style
 
@@ -107,7 +113,7 @@ Saved plans are treated as untrusted input. `apply` re-scans every file and take
 | `keys remove <key>… [--catalog C] [--force]` | Remove unused keys (L10N106) with all their translations and fingerprints. Without `--force` only manual keys no Swift code of the catalog's target uses, and stale keys, can go; keys Xcode extracts from code and `InfoPlist`/`AppShortcuts` keys are refused. |
 | `keys rename <old> <new> [--catalog C] [--update-code]` | Rename a key, keeping its translations, review states, source text and fingerprints. While code looks the key up, the rename needs `--update-code`, which rewrites those lookups (key literals and generated symbols in localization calls, including tests) in the files that use the catalog. A key that is also used as a plain or built string (`"color.name.blue"` as data, `"onboarding.step\(n)"`, or under `keys.dynamicPrefixes`) is refused: those uses keep it alive for L10N106 and must be renamed by hand first. |
 | `status [--fail-under N] [--approved-only]` | Coverage per catalog and locale; keys without text (`%lld`, `•`) and *Don't translate* keys are listed as not counted. With `--fail-under 100`, exit code 1 when any catalog/locale is below 100% (approved + needs review, or approved only); the failing catalogs are printed after the table. |
-| `accept [--key …] [--locale …]` | Mark translations as matching the current source text. |
+| `accept [--catalog <path>] [--key …] [--locale …]` | Mark translations as matching the current source text. `--catalog` limits the update to one discovered catalog (path relative to the project root); without it every matching catalog is updated. |
 | `doctor` | Environment and configuration checks. |
 | `init [--model …] [--force] [--allow-remote]` | Create `.l10n-agent.yml` and record fingerprints for existing translations. Infers the key style and depth from existing manual keys. `--allow-remote` writes `allowRemote: true` for a remote endpoint or `:cloud` model. |
 | `migrate [--apply] [--remove-legacy]` | Convert legacy `.lproj/*.strings` and `*.stringsdict` files into String Catalogs (see below). |
@@ -218,6 +224,14 @@ or in `.mcp.json`:
 Tools: `l10n_lint`, `l10n_status`, `l10n_plan_fixes`, `l10n_apply_fixes`, `l10n_translate`, `l10n_set_translations`, `l10n_add_keys` (also `shouldTranslate: false` for *Don't translate* keys), `l10n_accept`, `l10n_migrate_strings`, `l10n_remove_keys` (unused keys only; there is no force over MCP), `l10n_rename_key`. Arguments a tool does not declare are refused.
 
 An agent can lint, plan fixes, rename keys or improve comments in the plan, and apply it. It can then run the local translator or supply its own translations. Its translations are validated for placeholder parity, accepted only for target locales, and written as `needs_review`. All paths are confined to the project root, including through symlinks.
+
+`l10n_accept` takes the same optional scope as the CLI, with paths relative to the server's project root:
+
+```json
+{"catalog":"pangi-apple/pangi/Localizable.xcstrings","keys":["color.name.blue"],"locales":["de"]}
+```
+
+Catalog, key and locale selectors intersect; omitting `catalog` keeps the project-wide default.
 
 ### Claude Code skill
 

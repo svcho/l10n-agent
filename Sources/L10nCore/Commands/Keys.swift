@@ -28,6 +28,19 @@ public enum KeysCommand {
     /// Tables the build uses directly (Info.plist keys, App Shortcuts); Swift never references them.
     static let buildTables: Set<String> = ["InfoPlist", "AppShortcuts"]
 
+    /// Validates an explicit catalog selector and returns its project-relative path.
+    /// The path must resolve inside the project root and name a discovered catalog by its
+    /// full relative path; a root-level catalog is addressed by its filename, which is its
+    /// full relative path. A filename that only matches nested catalogs is refused.
+    static func resolveCatalogPath(_ path: String, project: Project) throws -> String {
+        let url = try PathUtil.resolveInside(path, root: project.root)
+        let relative = project.relativePath(url)
+        guard project.catalogURLs.map(project.relativePath).contains(relative) else {
+            throw L10nError.invalidArgument("\(path) is not a discovered String Catalog of this project; pass a project-relative .xcstrings path")
+        }
+        return relative
+    }
+
     /// Removes whole keys (all their translations). Without `force` only what L10N106 reports
     /// can go: manual keys no Swift file of the catalog's target references, or keys Xcode
     /// marked stale. Extracted keys and build-owned tables (`InfoPlist`) need `force`.
@@ -200,11 +213,10 @@ public enum KeysCommand {
 
         mutating func resolve(_ key: String, explicit: String?) -> Lookup {
             if let explicit {
-                guard let url = try? PathUtil.resolveInside(explicit, root: project.root),
-                      project.catalogURLs.map(project.relativePath).contains(project.relativePath(url))
-                else { return .failure("\(explicit) is not a catalog of this project") }
-                let path = project.relativePath(url)
-                guard let catalog = load(path, url) else { return .failure("\(path) cannot be read (L10N100)") }
+                guard let path = try? KeysCommand.resolveCatalogPath(explicit, project: project) else {
+                    return .failure("\(explicit) is not a catalog of this project")
+                }
+                guard let catalog = load(path, project.root.appendingPathComponent(path)) else { return .failure("\(path) cannot be read (L10N100)") }
                 return catalog.contains(key) ? .success(path) : .failure("not found in \(path)")
             }
             var matches: [String] = []

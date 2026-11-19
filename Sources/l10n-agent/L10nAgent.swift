@@ -284,15 +284,16 @@ struct Status: AsyncParsableCommand {
 struct Accept: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Mark translations as up to date with the current source text.",
-        discussion: "Use after reviewing translations whose source changed (L10N103). Approving the translation itself happens in Xcode's String Catalog editor."
+        discussion: "Use after reviewing translations whose source changed (L10N103). Approving the translation itself happens in Xcode's String Catalog editor. Pass --catalog to acknowledge one String Catalog only; without it every matching catalog is updated."
     )
     @OptionGroup var global: GlobalOptions
     @Option(parsing: .upToNextOption, help: "Only these keys.") var key: [String] = []
     @Option(parsing: .upToNextOption, help: "Only these locales.") var locale: [String] = []
+    @Option(name: .long, help: "Only this String Catalog (path relative to the project root).") var catalog: String?
 
     func run() async throws {
         try await execute {
-            let count = try TranslationEngine(project: try global.project()).accept(keys: key.isEmpty ? nil : key, locales: locale.isEmpty ? nil : locale)
+            let count = try TranslationEngine(project: try global.project()).accept(keys: key.isEmpty ? nil : key, locales: locale.isEmpty ? nil : locale, catalog: catalog)
             print("Updated \(count) fingerprint(s).")
             return 0
         }
