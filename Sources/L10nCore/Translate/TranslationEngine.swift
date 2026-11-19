@@ -926,7 +926,7 @@ public final class TranslationEngine: @unchecked Sendable {
     func acceptLocked(keys: [String]?, locales: [String]?, catalog: String? = nil) throws -> Int {
         do {
             // Validate the scope before loading fingerprints or changing anything.
-            let scope = try catalog.map { try KeysCommand.resolveCatalogPath($0, project: project) }
+            let scope = try catalog.map { try Self.acceptScope($0, project: project) }
             var loaded = try load(TranslateOptions(locales: locales))
             var count = 0
             let keyFilter = keys.map { Set($0.map(ByteKey.init)) }
@@ -947,6 +947,16 @@ public final class TranslationEngine: @unchecked Sendable {
             try loaded.fingerprints.save()
             return count
         }
+    }
+
+    /// Validates the raw `catalog` selector before it is normalized. Acceptance names a
+    /// catalog by its project-relative path only: an absolute path or a `..` component would
+    /// address a discovered catalog by a spelling the project does not use.
+    private static func acceptScope(_ catalog: String, project: Project) throws -> String {
+        guard !catalog.hasPrefix("/"), !catalog.split(separator: "/").contains("..") else {
+            throw L10nError.invalidArgument("\(catalog) is not a project-relative String Catalog path; pass a project-relative .xcstrings path without \"..\" components")
+        }
+        return try KeysCommand.resolveCatalogPath(catalog, project: project)
     }
 }
 

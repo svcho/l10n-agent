@@ -407,34 +407,45 @@ struct TranslationTests {
         try bytes(root, "iOS/Localizable.xcstrings").write(to: outsideCatalog)
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("Linked.xcstrings"), withDestinationURL: outsideCatalog)
 
-        let fingerprints = try FingerprintStore.load(root: root).serialized()
+        let fingerprintBytes = try Data(contentsOf: FingerprintStore.path(root: root))
         let iosBytes = try bytes(root, "iOS/Localizable.xcstrings")
         let macBytes = try bytes(root, "Mac/Localizable.xcstrings")
         let engine = TranslationEngine(project: try Project.discover(root: root))
 
-        func expectRejected(_ catalog: String, contains: String) {
+        func expectRejected(_ catalog: String, contains: String) throws {
+            // Compare the raw file: re-encoding through FingerprintStore could hide a rewrite.
+            let before = try Data(contentsOf: FingerprintStore.path(root: root))
+            var message: String?
             do {
                 _ = try engine.accept(keys: ["color.name.blue"], locales: ["de"], catalog: catalog)
                 Issue.record("\(catalog) was accepted")
             } catch let error as L10nError {
-                guard case .invalidArgument(let message) = error else {
+                if case .invalidArgument(let text) = error {
+                    message = text
+                } else {
                     Issue.record("\(catalog): unexpected \(error)")
-                    return
                 }
-                #expect(message.contains(catalog), "\(message)")
-                #expect(message.contains(contains), "\(message)")
             } catch {
                 Issue.record("\(catalog): unexpected \(error)")
             }
+            if let message {
+                #expect(message.contains(catalog), "\(message)")
+                #expect(message.contains(contains), "\(message)")
+            }
+            #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == before, "\(catalog) rewrote fingerprints.json")
         }
 
         // Only nested files share this basename, so the filename is not a full relative path.
-        expectRejected("Localizable.xcstrings", contains: "discovered")
-        expectRejected("Missing.xcstrings", contains: "discovered")
-        expectRejected("../Outside.xcstrings", contains: "outside the project root")
-        expectRejected("Linked.xcstrings", contains: "outside the project root")
+        try expectRejected("Localizable.xcstrings", contains: "discovered")
+        try expectRejected("Missing.xcstrings", contains: "discovered")
+        // The selector is checked before it is normalized, so neither a `..` component nor an
+        // absolute path can name a discovered catalog by a spelling the project does not use.
+        try expectRejected("../Outside.xcstrings", contains: "project-relative")
+        try expectRejected("iOS/../Mac/Localizable.xcstrings", contains: "project-relative")
+        try expectRejected(root.appendingPathComponent("Mac/Localizable.xcstrings").path, contains: "project-relative")
+        try expectRejected("Linked.xcstrings", contains: "outside the project root")
 
-        #expect(try FingerprintStore.load(root: root).serialized() == fingerprints)
+        #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == fingerprintBytes)
         #expect(try bytes(root, "iOS/Localizable.xcstrings") == iosBytes)
         #expect(try bytes(root, "Mac/Localizable.xcstrings") == macBytes)
     }

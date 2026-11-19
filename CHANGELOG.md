@@ -4,7 +4,7 @@ All notable changes to `l10n-agent` are documented here.
 
 ## Unreleased
 
-- `l10n-agent accept --catalog <project-relative path>` and MCP `l10n_accept` `catalog`: acknowledge a reviewed translation in one String Catalog only, so the same key in another target keeps its L10N103 finding. Catalog, key and locale selectors intersect; without the scope, acceptance and `init` seeding stay project-wide.
+- `l10n-agent accept --catalog <project-relative path>` and MCP `l10n_accept` `catalog`: acknowledge a reviewed translation in one String Catalog only, so the same key in another target keeps its L10N103 finding. Catalog, key and locale selectors intersect; without the scope, acceptance and `init` seeding stay project-wide. The selector must be project-relative: absolute paths and `..` components are refused before normalization, and MCP refuses an explicit `catalog: null` instead of treating it as omission.
 
 ## 0.5.0 — 2026-10-16
 

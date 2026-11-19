@@ -230,7 +230,7 @@ struct MCPServerTests {
             "catalog": "../Outside.xcstrings", "keys": ["color.name.blue"], "locales": ["de"],
         ])
         #expect(outsideError == true)
-        #expect(text(outsideContent).contains("outside the project root"))
+        #expect(text(outsideContent).contains("project-relative"))
         #expect(try FingerprintStore.load(root: root).serialized() == settled)
 
         // Without a catalog the remaining German record is updated too.
@@ -247,5 +247,25 @@ struct MCPServerTests {
         let (unknownContent, unknownError) = try await client.callTool(name: "l10n_accept", arguments: ["force": true])
         #expect(unknownError == true)
         #expect(text(unknownContent).contains("Unknown argument(s)"))
+    }
+
+    @Test func acceptRefusesAnExplicitNullCatalog() async throws {
+        let (root, client) = try await makeStaleTwoCatalogProject()
+        let fingerprints = try bytes(root, ".l10n-agent/fingerprints.json")
+
+        // An explicit null is not omission: it must not widen acceptance to every catalog.
+        let (content, isError) = try await client.callTool(name: "l10n_accept", arguments: [
+            "catalog": .null, "keys": ["color.name.blue"], "locales": ["de"],
+        ])
+        #expect(isError == true)
+        #expect(text(content).contains("catalog"))
+        #expect(text(content).contains("string"))
+        #expect(try bytes(root, ".l10n-agent/fingerprints.json") == fingerprints)
+
+        // Both German translations still need review.
+        let (lintContent, _) = try await client.callTool(name: "l10n_lint", arguments: ["scope": "catalogs", "rules": ["L10N103"]])
+        let report = try JSONDecoder().decode(LintReport.self, from: Data(text(lintContent).utf8))
+        #expect(Set(report.diagnostics.map(\.file)) == ["iOS/Localizable.xcstrings", "Mac/Localizable.xcstrings"])
+        #expect(report.diagnostics.allSatisfy { $0.key == "color.name.blue" && $0.locales == ["de"] })
     }
 }

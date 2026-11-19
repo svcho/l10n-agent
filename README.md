@@ -66,7 +66,7 @@ After reviewing a translation whose source changed, run `l10n-agent accept --key
 l10n-agent accept --catalog pangi-apple/pangi/Localizable.xcstrings --key color.name.blue --locale de
 ```
 
-Catalog, key and locale selectors intersect. A catalog is named by its full path relative to the project root; a root-level catalog by its filename, which is its full relative path. A filename that only matches nested catalogs is refused. Without `--catalog`, acceptance stays project-wide.
+Catalog, key and locale selectors intersect. A catalog is named by its full path relative to the project root; a root-level catalog by its filename, which is its full relative path. A filename that only matches nested catalogs is refused, and so is an absolute path or a `..` component: the selector is checked before it is normalized. Without `--catalog`, acceptance stays project-wide. Every discovered catalog is loaded to derive the target locales, so a malformed sibling catalog blocks a scoped acceptance too.
 
 ### Keys and code style
 
@@ -231,7 +231,7 @@ An agent can lint, plan fixes, rename keys or improve comments in the plan, and 
 {"catalog":"pangi-apple/pangi/Localizable.xcstrings","keys":["color.name.blue"],"locales":["de"]}
 ```
 
-Catalog, key and locale selectors intersect; omitting `catalog` keeps the project-wide default.
+Catalog, key and locale selectors intersect; omitting `catalog` keeps the project-wide default. When supplied, `catalog` must be a string: an explicit `null` is refused instead of being read as omission, and the same project-relative path rules apply (no absolute paths or `..` components).
 
 ### Claude Code skill
 

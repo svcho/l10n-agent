@@ -196,6 +196,11 @@ public struct L10nMCPServer: Sendable {
                 return failure("Unknown argument(s) for \(name): \(unknown.sorted().joined(separator: ", "))")
             }
         }
+        // `catalog` is optional, but an explicit null is not the same as omitting it: decoding
+        // would turn both into nil and silently widen acceptance to every catalog.
+        if name == "l10n_accept", let catalog = arguments["catalog"], catalog.stringValue == nil {
+            return failure("catalog must be a string when supplied; omit it to accept every matching catalog")
+        }
         guard Self.mutatingTools.contains(name) else {
             return await perform(name: name, arguments: arguments)
         }
