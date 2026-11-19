@@ -332,6 +332,29 @@ struct TranslationTests {
         return Set(report.diagnostics.map { "\($0.file)|\($0.key ?? "")|\(($0.locales ?? []).joined(separator: ","))" })
     }
 
+    /// Asserts `accept` refuses `catalog` with an `invalidArgument` message that names the selector
+    /// and `contains`, and that the refusal leaves `fingerprints.json` byte-identical.
+    private func expectRejected(_ catalog: String, contains: String, engine: TranslationEngine, root: URL) throws {
+        // Compare the raw file: re-encoding through FingerprintStore could hide a rewrite.
+        let before = try Data(contentsOf: FingerprintStore.path(root: root))
+        var message: String?
+        do {
+            _ = try engine.accept(keys: ["color.name.blue"], locales: ["de"], catalog: catalog)
+            Issue.record("\(catalog) was accepted")
+        } catch let error as L10nError {
+            if case .invalidArgument(let text) = error {
+                message = text
+            } else {
+                Issue.record("\(catalog): unexpected \(error)")
+            }
+        } catch {
+            Issue.record("\(catalog): unexpected \(error)")
+        }
+        #expect(message?.contains(catalog) == true, "\(message ?? "no message")")
+        #expect(message?.contains(contains) == true, "\(message ?? "no message")")
+        #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == before, "\(catalog) rewrote fingerprints.json")
+    }
+
     @Test func scopedAcceptUpdatesOnlyTheSelectedCatalog() throws {
         let (root, project) = try twoCatalogProject()
         #expect(try TranslationEngine(project: project).accept(keys: nil, locales: nil) == 4)
@@ -412,38 +435,15 @@ struct TranslationTests {
         let macBytes = try bytes(root, "Mac/Localizable.xcstrings")
         let engine = TranslationEngine(project: try Project.discover(root: root))
 
-        func expectRejected(_ catalog: String, contains: String) throws {
-            // Compare the raw file: re-encoding through FingerprintStore could hide a rewrite.
-            let before = try Data(contentsOf: FingerprintStore.path(root: root))
-            var message: String?
-            do {
-                _ = try engine.accept(keys: ["color.name.blue"], locales: ["de"], catalog: catalog)
-                Issue.record("\(catalog) was accepted")
-            } catch let error as L10nError {
-                if case .invalidArgument(let text) = error {
-                    message = text
-                } else {
-                    Issue.record("\(catalog): unexpected \(error)")
-                }
-            } catch {
-                Issue.record("\(catalog): unexpected \(error)")
-            }
-            if let message {
-                #expect(message.contains(catalog), "\(message)")
-                #expect(message.contains(contains), "\(message)")
-            }
-            #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == before, "\(catalog) rewrote fingerprints.json")
-        }
-
         // Only nested files share this basename, so the filename is not a full relative path.
-        try expectRejected("Localizable.xcstrings", contains: "discovered")
-        try expectRejected("Missing.xcstrings", contains: "discovered")
+        try expectRejected("Localizable.xcstrings", contains: "discovered", engine: engine, root: root)
+        try expectRejected("Missing.xcstrings", contains: "discovered", engine: engine, root: root)
         // The selector is checked before it is normalized, so neither a `..` component nor an
         // absolute path can name a discovered catalog by a spelling the project does not use.
-        try expectRejected("../Outside.xcstrings", contains: "project-relative")
-        try expectRejected("iOS/../Mac/Localizable.xcstrings", contains: "project-relative")
-        try expectRejected(root.appendingPathComponent("Mac/Localizable.xcstrings").path, contains: "project-relative")
-        try expectRejected("Linked.xcstrings", contains: "outside the project root")
+        try expectRejected("../Outside.xcstrings", contains: "project-relative", engine: engine, root: root)
+        try expectRejected("iOS/../Mac/Localizable.xcstrings", contains: "project-relative", engine: engine, root: root)
+        try expectRejected(root.appendingPathComponent("Mac/Localizable.xcstrings").path, contains: "project-relative", engine: engine, root: root)
+        try expectRejected("Linked.xcstrings", contains: "outside the project root", engine: engine, root: root)
 
         #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == fingerprintBytes)
         #expect(try bytes(root, "iOS/Localizable.xcstrings") == iosBytes)
@@ -458,7 +458,6 @@ struct TranslationTests {
         _ = try TranslationEngine(project: project).accept(keys: nil, locales: nil)
         try editSource(root, "iOS/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
         try editSource(root, "Mac/Localizable.xcstrings", ["color.name.blue": "Deep Blue"])
-        let fingerprintBytes = try Data(contentsOf: FingerprintStore.path(root: root))
 
         // U+0600 is a prepend character: it joins the following `/` into one grapheme cluster,
         // so a `Character` split sees `iOS\u{0600}/..` and misses the `..` component, while
@@ -469,23 +468,9 @@ struct TranslationTests {
         let hiddenSlash = "/\u{0301}tmp/Localizable.xcstrings"
         #expect(!hiddenSlash.hasPrefix("/"))
 
+        let engine = TranslationEngine(project: project)
         for catalog in [hiddenParent, hiddenSlash] {
-            var message: String?
-            do {
-                _ = try TranslationEngine(project: project).accept(keys: ["color.name.blue"], locales: ["de"], catalog: catalog)
-                Issue.record("\(catalog) was accepted")
-            } catch let error as L10nError {
-                if case .invalidArgument(let text) = error {
-                    message = text
-                } else {
-                    Issue.record("\(catalog): unexpected \(error)")
-                }
-            } catch {
-                Issue.record("\(catalog): unexpected \(error)")
-            }
-            #expect(message?.contains("project-relative") == true, "\(message ?? "no message")")
-            // Compare the raw file: re-encoding through FingerprintStore could hide a rewrite.
-            #expect(try Data(contentsOf: FingerprintStore.path(root: root)) == fingerprintBytes, "\(catalog) rewrote fingerprints.json")
+            try expectRejected(catalog, contains: "project-relative", engine: engine, root: root)
         }
 
         // Nothing was acknowledged: both catalogs still report their stale translations.
