@@ -160,6 +160,159 @@ struct RerunRegressionTests {
         #expect(StatusCommand.text(report).contains("(3 keys, 2 manual; 1 without text and 1 don't translate not counted)"))
     }
 
+    /// The device fixture, with the English device members in the given order: with
+    /// `applewatchFirst` the first leaf is the placeholder-only case.
+    static func deviceCatalog(applewatchFirst: Bool, german: Bool) -> String {
+        let applewatch = #""applewatch": {"stringUnit": {"state": "translated", "value": "%lld"}}"#
+        let other = #""other": {"stringUnit": {"state": "translated", "value": "%lld items"}}"#
+        let english = applewatchFirst ? "\(applewatch), \(other)" : "\(other), \(applewatch)"
+        let germanDevice = #"{"applewatch": {"stringUnit": {"state": "translated", "value": "%lld"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld Artikel"}}}"#
+        let germanMember = german ? #""de": {"variations": {"device": \#(germanDevice)}}, "# : ""
+        return """
+        {
+          "sourceLanguage": "en",
+          "strings": {
+            "inventory.items": {
+              "comment": "Number of items in the inventory",
+              "localizations": {
+                \(germanMember)"en": {"variations": {"device": {\(english)}}}
+              }
+            },
+            "inventory.symbols": {
+              "localizations": {
+                "en": {"variations": {"device": {"applewatch": {"stringUnit": {"state": "translated", "value": "%lld"}}, "other": {"stringUnit": {"state": "translated", "value": "•"}}}}}
+              }
+            },
+            "inventory.excluded": {
+              "shouldTranslate": false,
+              "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Excluded label"}}}
+            },
+            "inventory.stale": {
+              "extractionState": "stale",
+              "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Stale label"}}}
+            }
+          },
+          "version": "1.1"
+        }
+        """
+    }
+
+    @Test(arguments: [true, false], [false, true])
+    func statusAndLintCountEveryDeviceVariant(applewatchFirst: Bool, german: Bool) async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "Localizable.xcstrings": Self.deviceCatalog(applewatchFirst: applewatchFirst, german: german),
+        ])
+        let project = try Project.discover(root: root)
+        let report = try StatusCommand.run(project: project)
+        let catalog = try #require(report.catalogs.first)
+        #expect(catalog.keys == 4)
+        #expect(catalog.withoutText == 1)
+        #expect(catalog.doNotTranslate == 1)
+        let de = try #require(catalog.locales.first { $0.locale == "de" })
+        #expect(de.total == 1)
+
+        let findings = try Linter(project: project).run(LintOptions(rules: ["L10N101", "L10N106", "L10N112"], code: false)).diagnostics
+        #expect(findings.filter { $0.rule == "L10N106" }.map(\.key) == ["inventory.stale"])
+        #expect(findings.filter { $0.rule == "L10N112" }.isEmpty)
+        let missing = findings.filter { $0.rule == "L10N101" }
+
+        let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(dryRun.failed.isEmpty)
+
+        if german {
+            #expect(de.missing == 0 && de.approved == 1 && de.needsReview == 0 && de.percentComplete == 100)
+            #expect(StatusCommand.below(report, percent: 100).isEmpty)
+            #expect(StatusCommand.below(report, percent: 100, approvedOnly: true).isEmpty)
+            #expect(missing.isEmpty)
+            #expect(dryRun.planned == 0)
+        } else {
+            #expect(de.missing == 1 && de.approved == 0 && de.needsReview == 0 && de.percentComplete == 0)
+            #expect(StatusCommand.below(report, percent: 100) == ["Localizable.xcstrings de 0%"])
+            #expect(missing.map(\.key) == ["inventory.items"])
+            #expect(missing.first?.locales == ["de"])
+            #expect(dryRun.planned == 2)
+            #expect(dryRun.units?.map(\.path) == [["variations", "device", "applewatch"], ["variations", "device", "other"]])
+            #expect(dryRun.units?.allSatisfy { $0.key == "inventory.items" && $0.locale == "de" } == true)
+        }
+    }
+
+    @Test func statusAndLintCountPluralFormsWithText() async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "Localizable.xcstrings": """
+            {
+              "sourceLanguage": "en",
+              "strings": {
+                "inventory.plural": {
+                  "comment": "Inventory count",
+                  "localizations": {
+                    "en": {
+                      "variations": {
+                        "plural": {
+                          "one": {"stringUnit": {"state": "translated", "value": "%lld"}},
+                          "other": {"stringUnit": {"state": "translated", "value": "%lld items"}}
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "version": "1.1"
+            }
+            """,
+        ])
+        let project = try Project.discover(root: root)
+        let report = try StatusCommand.run(project: project)
+        let de = try #require(report.catalogs.first?.locales.first { $0.locale == "de" })
+        #expect(de.total == 1 && de.missing == 1)
+
+        let findings = try Linter(project: project).run(LintOptions(rules: ["L10N101", "L10N112"], code: false)).diagnostics
+        #expect(findings.filter { $0.rule == "L10N101" }.map(\.key) == ["inventory.plural"])
+        #expect(findings.filter { $0.rule == "L10N101" }.first?.locales == ["de"])
+        #expect(findings.filter { $0.rule == "L10N112" }.isEmpty)
+
+        let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        let unit = try #require(dryRun.units?.first)
+        #expect(dryRun.planned == 1)
+        #expect(unit.path == [])
+        #expect(unit.sourceForms == ["one": "%lld", "other": "%lld items"])
+        #expect(unit.categories == ["one", "other"])
+    }
+
+    @Test func statusAndLintFallBackToTheKeyForEmptySources() async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "Localizable.xcstrings": """
+            {
+              "sourceLanguage": "en",
+              "strings": {
+                "inventory.empty": {"localizations": {"en": {}}},
+                "inventory.blank": {"localizations": {"en": {"stringUnit": {"state": "translated", "value": ""}}}},
+                "%lld items": {}
+              },
+              "version": "1.1"
+            }
+            """,
+        ])
+        let project = try Project.discover(root: root)
+        let report = try StatusCommand.run(project: project)
+        let catalog = try #require(report.catalogs.first)
+        #expect(catalog.withoutText == 1)
+        let de = try #require(catalog.locales.first { $0.locale == "de" })
+        #expect(de.total == 2 && de.missing == 2)
+
+        let findings = try Linter(project: project).run(LintOptions(rules: ["L10N101", "L10N112"], code: false)).diagnostics
+        let missing = findings.filter { $0.rule == "L10N101" }
+        #expect(missing.map(\.key) == ["%lld items", "inventory.empty"])
+        #expect(missing.allSatisfy { $0.locales == ["de"] })
+        #expect(findings.filter { $0.rule == "L10N112" }.map(\.key) == ["%lld items"])
+
+        let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(dryRun.planned == 1)
+        #expect(dryRun.units?.map(\.key) == ["%lld items"])
+    }
+
     // R6
     @Test func migrationUsesCodeAndSectionComments() throws {
         let english = """

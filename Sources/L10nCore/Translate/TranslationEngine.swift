@@ -147,7 +147,7 @@ public final class TranslationEngine: @unchecked Sendable {
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
                 // Like lint and status: values without words ("%lld", "•") are never sent.
-                guard sourceNode.leaves.contains(where: { FormatSpecifier.hasText($0.unit.value) }) else { continue }
+                guard sourceNode.hasTranslatableText() else { continue }
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 let shapes = Self.unitShapes(sourceNode, path: [])
 
