@@ -136,7 +136,7 @@ All commands accept `--path <project root>` (default: current directory). `--for
 | L10N101 | missing-translation | warning | Key not translated for a target locale, including missing required device cases and plural categories |
 | L10N102 | needs-review | info | Translation waiting for review |
 | L10N103 | stale-translation | warning | Source text changed since the translation was made |
-| L10N104 | format-mismatch | error | Translation's format specifiers differ from the source by argument index or type (reordering with `%2$@` is fine) |
+| L10N104 | format-mismatch | error | Translation's format specifiers differ from the source by argument index or type, or an explicit named-substitution index differs (reordering with `%2$@` is fine) |
 | L10N105 | missing-comment | info | Key without a translator comment |
 | L10N106 | unused-key | info | Xcode marked the key stale, or no Swift file of the project references a manual key: not as a literal, a generated symbol, an interpolated prefix (`"settings.\(name)"`) or a `keys.dynamicPrefixes` entry. Only the Swift files of the catalog's own target count, plus Swift package code and files that see no catalog (shared code often holds keys the app looks up). `InfoPlist` and `AppShortcuts` tables are not checked. |
 | L10N107 | key-style | warning | Manual key violates the configured key style |
@@ -175,7 +175,7 @@ translator:
 ```
 
 - Strings are sent in batches with their key and comment as context, plus your glossary and `instructions`.
-- Format specifiers are replaced by tokens (`⟦1⟧`, `⟦@files⟧`) before sending and restored afterwards. If the model reorders arguments, positional specifiers (`%2$lld … %1$@`) are written. Answers that drop, add or retype a placeholder are rejected and retried with feedback.
+- Format specifiers are replaced by tokens (`⟦1⟧`, `⟦@files⟧`) before sending and restored afterwards. If the model reorders arguments, positional specifiers (`%2$lld … %1$@`) are written. Positional named substitutions such as `%2$#@COUNT@` are masked as `⟦@COUNT⟧` and restored with their original spelling, including the explicit index. Answers that drop, add or retype a placeholder are rejected and retried with feedback.
 - Plural keys get exactly the CLDR categories of the target language (`one/few/many/other` for Polish, `other` for Japanese, `one/two/few/many/other` for Maltese). A language missing from the built-in table is never guessed: its plural keys are reported until you list its categories under `pluralCategories`. `%#@name@` substitutions keep their `argNum` and `formatSpecifier`.
 - Each request numbers its items 1…n, and retries go one item at a time. Answers that look shifted between items (different sources, identical translations) are retried individually.
 - Machine translations (`needs_review`) whose placeholders are broken are retranslated. Approved translations are never touched, not even single plural categories. They are listed under *approved skipped* when their source changed or their structure differs (for example plain text where the source is now plural).

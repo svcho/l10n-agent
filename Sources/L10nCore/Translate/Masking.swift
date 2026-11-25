@@ -42,7 +42,7 @@ public struct MaskedText: Equatable, Sendable {
                 valueOrder.append(index)
                 hasDynamicWidth = hasDynamicWidth || !token.widthArguments.isEmpty
                 positional = positional || token.isPositional
-            case .substitution(let name):
+            case .substitution(let name, _):
                 text += "⟦@\(name)⟧"
                 if substitutions[name] == nil { substitutions[name] = token.text }
             case .substitutionArgument:

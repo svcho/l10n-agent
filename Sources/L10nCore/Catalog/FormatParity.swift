@@ -59,6 +59,20 @@ public enum FormatParity {
             return "missing substitution \(sourceSubstitutions.subtracting(targetSubstitutions).sorted().joined(separator: ", "))"
         }
 
+        // An explicit `n$` index names the argument the substitution counts; a translation
+        // may drop it, but not point it at another argument.
+        let sourcePositions = FormatSpecifier.substitutionPositions(in: source)
+        let targetPositions = FormatSpecifier.substitutionPositions(in: target)
+        for name in Set(sourcePositions.keys).union(targetPositions.keys).sorted() {
+            guard let targetIndex = targetPositions[name] else { continue }
+            guard let sourceIndex = sourcePositions[name] else {
+                return "substitution \(name) uses argument \(targetIndex) but the source has no explicit index"
+            }
+            if targetIndex != sourceIndex {
+                return "substitution \(name) uses argument \(targetIndex) but the source uses \(sourceIndex)"
+            }
+        }
+
         let sourceUsesArg = FormatSpecifier.tokens(in: source).contains { $0.kind == .substitutionArgument }
         let targetUsesArg = FormatSpecifier.tokens(in: target).contains { $0.kind == .substitutionArgument }
         if targetUsesArg, !sourceUsesArg { return "uses %arg outside a substitution" }
