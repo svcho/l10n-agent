@@ -146,7 +146,8 @@ public final class TranslationEngine: @unchecked Sendable {
                 if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
-                // Like lint and status: values without words ("%lld", "•") are never sent.
+                // Like lint and status: a key is planned only when some source value has words; once it
+                // qualifies, its placeholder-only cases (a "%lld" device case) are planned too.
                 guard sourceNode.hasTranslatableText() else { continue }
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 let shapes = Self.unitShapes(sourceNode, path: [])

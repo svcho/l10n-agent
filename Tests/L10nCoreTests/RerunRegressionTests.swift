@@ -160,8 +160,9 @@ struct RerunRegressionTests {
         #expect(StatusCommand.text(report).contains("(3 keys, 2 manual; 1 without text and 1 don't translate not counted)"))
     }
 
-    /// The device fixture, with the English device members in the given order: with
-    /// `applewatchFirst` the first leaf is the placeholder-only case.
+    /// The device fixture, with the English device members in the given JSON order.
+    /// `applewatchFirst` only changes member order: leaves are collected sorted by case
+    /// name, so the placeholder-only `applewatch` leaf comes first either way.
     static func deviceCatalog(applewatchFirst: Bool, german: Bool) -> String {
         let applewatch = #""applewatch": {"stringUnit": {"state": "translated", "value": "%lld"}}"#
         let other = #""other": {"stringUnit": {"state": "translated", "value": "%lld items"}}"#
@@ -244,7 +245,7 @@ struct RerunRegressionTests {
             {
               "sourceLanguage": "en",
               "strings": {
-                "inventory.plural": {
+                "%lld items": {
                   "comment": "Inventory count",
                   "localizations": {
                     "en": {
@@ -268,13 +269,15 @@ struct RerunRegressionTests {
         #expect(de.total == 1 && de.missing == 1)
 
         let findings = try Linter(project: project).run(LintOptions(rules: ["L10N101", "L10N112"], code: false)).diagnostics
-        #expect(findings.filter { $0.rule == "L10N101" }.map(\.key) == ["inventory.plural"])
+        // The key "%lld items" would get an L10N112 hint without the variation guard.
+        #expect(findings.filter { $0.rule == "L10N101" }.map(\.key) == ["%lld items"])
         #expect(findings.filter { $0.rule == "L10N101" }.first?.locales == ["de"])
         #expect(findings.filter { $0.rule == "L10N112" }.isEmpty)
 
         let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
         let unit = try #require(dryRun.units?.first)
         #expect(dryRun.planned == 1)
+        #expect(unit.key == "%lld items" && unit.locale == "de")
         #expect(unit.path == [])
         #expect(unit.sourceForms == ["one": "%lld", "other": "%lld items"])
         #expect(unit.categories == ["one", "other"])
