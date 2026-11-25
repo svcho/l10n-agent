@@ -269,13 +269,13 @@ public final class TranslationEngine: @unchecked Sendable {
             let forms = plural.compactMapValues { $0.stringUnit?.value }
             return forms.isEmpty ? [] : [UnitShape(path: path, source: nil, forms: forms)]
         }
+        var shapes: [UnitShape] = []
         if let device = variations["device"] {
-            return device.keys.sorted().flatMap { name in
+            // Device cases may share the localization's root substitutions, collected below.
+            shapes = device.keys.sorted().flatMap { name in
                 unitShapes(device[name]!, path: path + ["variations", "device", name])
             }
-        }
-        var shapes: [UnitShape] = []
-        if let unit = node.stringUnit {
+        } else if let unit = node.stringUnit {
             shapes.append(UnitShape(path: path, source: unit.value, forms: nil))
         }
         for (name, substitution) in node.substitutions.sorted(by: { $0.key < $1.key }) {

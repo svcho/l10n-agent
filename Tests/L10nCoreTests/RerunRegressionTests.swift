@@ -283,6 +283,110 @@ struct RerunRegressionTests {
         #expect(unit.categories == ["one", "other"])
     }
 
+    @Test func positionalSubstitutionNamesAreNotText() async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "Localizable.xcstrings": """
+            {
+              "sourceLanguage": "en",
+              "strings": {
+                "inventory.count": {
+                  "localizations": {
+                    "en": {
+                      "substitutions": {
+                        "COUNT": {
+                          "argNum": 1, "formatSpecifier": "lld",
+                          "variations": {"plural": {
+                            "one": {"stringUnit": {"state": "translated", "value": "%arg"}},
+                            "other": {"stringUnit": {"state": "translated", "value": "%arg"}}
+                          }}
+                        }
+                      },
+                      "variations": {"device": {
+                        "applewatch": {"stringUnit": {"state": "translated", "value": "%lld"}},
+                        "other": {"stringUnit": {"state": "translated", "value": "%1$#@COUNT@"}}
+                      }}
+                    }
+                  }
+                }
+              },
+              "version": "1.1"
+            }
+            """,
+        ])
+        #expect(!FormatSpecifier.hasText("%1$#@COUNT@"))
+        #expect(FormatSpecifier.hasText("%1$#@COUNT@ left"))
+        #expect(FormatSpecifier.hasText("%%1$#@COUNT@"))
+        #expect(!FormatSpecifier.hasText("%arg%1$#@COUNT@123"))
+        let project = try Project.discover(root: root)
+        let catalog = try #require(try StatusCommand.run(project: project).catalogs.first)
+        #expect(catalog.withoutText == 1)
+        #expect(StatusCommand.below(try StatusCommand.run(project: project), percent: 100).isEmpty)
+        let findings = try Linter(project: project).run(LintOptions(rules: ["L10N101"], code: false)).diagnostics
+        #expect(findings.isEmpty)
+    }
+
+    @Test func deviceVariantsCheckRootSubstitutions() async throws {
+        let root = try TestSupport.makeProject([
+            ".l10n-agent.yml": "locales: [de]\n",
+            "Localizable.xcstrings": """
+            {
+              "sourceLanguage": "en",
+              "strings": {
+                "inventory.items": {
+                  "comment": "Items",
+                  "localizations": {
+                    "de": {
+                      "substitutions": {
+                        "items": {
+                          "argNum": 1, "formatSpecifier": "lld",
+                          "variations": {"plural": {
+                            "other": {"stringUnit": {"state": "translated", "value": "%arg Artikel"}}
+                          }}
+                        }
+                      },
+                      "variations": {"device": {
+                        "applewatch": {"stringUnit": {"state": "translated", "value": "%#@items@"}},
+                        "other": {"stringUnit": {"state": "translated", "value": "%#@items@"}}
+                      }}
+                    },
+                    "en": {
+                      "substitutions": {
+                        "items": {
+                          "argNum": 1, "formatSpecifier": "lld",
+                          "variations": {"plural": {
+                            "one": {"stringUnit": {"state": "translated", "value": "%arg item"}},
+                            "other": {"stringUnit": {"state": "translated", "value": "%arg items"}}
+                          }}
+                        }
+                      },
+                      "variations": {"device": {
+                        "applewatch": {"stringUnit": {"state": "translated", "value": "%#@items@"}},
+                        "other": {"stringUnit": {"state": "translated", "value": "%#@items@"}}
+                      }}
+                    }
+                  }
+                }
+              },
+              "version": "1.1"
+            }
+            """,
+        ])
+        let project = try Project.discover(root: root)
+        let de = try #require(try StatusCommand.run(project: project).catalogs.first?.locales.first { $0.locale == "de" })
+        #expect(de.total == 1 && de.missing == 1)
+        let missing = try Linter(project: project).run(LintOptions(rules: ["L10N101"], code: false)).diagnostics
+        #expect(missing.map(\.key) == ["inventory.items"])
+        #expect(missing.first?.locales == ["de"])
+
+        let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(dryRun.planned == 1)
+        let unit = try #require(dryRun.units?.first)
+        #expect(unit.key == "inventory.items" && unit.locale == "de")
+        #expect(unit.path == ["substitutions", "items"])
+        #expect(unit.categories == ["one"])
+    }
+
     @Test func statusAndLintFallBackToTheKeyForEmptySources() async throws {
         let root = try TestSupport.makeProject([
             ".l10n-agent.yml": "locales: [de]\n",
