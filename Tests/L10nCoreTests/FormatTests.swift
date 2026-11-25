@@ -19,6 +19,41 @@ struct FormatTests {
         #expect(FormatSpecifier.stripPosition("%2$lld") == "%lld")
     }
 
+    @Test func parsesPositionalNamedSubstitutions() throws {
+        let positional = FormatSpecifier.tokens(in: "%1$#@COUNT@")
+        #expect(positional.count == 1)
+        let positionalToken = try #require(positional.first)
+        #expect(positionalToken.kind == .substitution(name: "COUNT"))
+        #expect(positionalToken.text == "%1$#@COUNT@")
+        #expect(positionalToken.isPositional)
+
+        let sequential = FormatSpecifier.tokens(in: "%#@COUNT@")
+        #expect(sequential.count == 1)
+        let sequentialToken = try #require(sequential.first)
+        #expect(sequentialToken.kind == .substitution(name: "COUNT"))
+        #expect(sequentialToken.text == "%#@COUNT@")
+        #expect(!sequentialToken.isPositional)
+
+        #expect(!FormatSpecifier.hasText("%1$#@COUNT@"))
+        #expect(!FormatSpecifier.hasText("%lld %1$#@COUNT@"))
+        #expect(FormatSpecifier.hasText("%1$#@COUNT@ items"))
+        #expect(FormatSpecifier.hasText("%%1$#@COUNT@"))
+        #expect(!FormatSpecifier.hasText("%arg%1$#@COUNT@123"))
+        #expect(FormatSpecifier.substitutionNames(in: "%1$#@COUNT@") == ["COUNT"])
+
+        let positionalArgument = FormatSpecifier.tokens(in: "%1$lld")
+        #expect(positionalArgument.count == 1)
+        let argument = try #require(positionalArgument.first)
+        #expect(argument.kind == .argument(index: 1, type: .integer))
+        #expect(argument.isPositional)
+
+        let unsigned = FormatSpecifier.tokens(in: "%#x")
+        #expect(unsigned.count == 1)
+        let unsignedToken = try #require(unsigned.first)
+        #expect(unsignedToken.kind == .argument(index: 1, type: .unsigned))
+        #expect(!unsignedToken.isPositional)
+    }
+
     @Test func parityAllowsReorderingButNotRetyping() {
         #expect(FormatParity.problem(source: "%1$@ shared %2$lld files", target: "%2$lld Dateien von %1$@") == nil)
         #expect(FormatParity.problem(source: "%@ shared %lld files", target: "%2$lld Dateien von %1$@") == nil)
@@ -38,6 +73,17 @@ struct FormatTests {
         let masked = MaskedText(source: "Hello %@, you have %lld new messages (100%%)")
         #expect(masked.text == "Hello ⟦1⟧, you have ⟦2⟧ new messages (100⟦%⟧)")
         #expect(try masked.unmask("Hallo ⟦1⟧, du hast ⟦2⟧ neue Nachrichten (100⟦%⟧)") == "Hallo %@, du hast %lld neue Nachrichten (100%%)")
+    }
+
+    @Test func maskRoundTripKeepsPositionalSubstitutions() throws {
+        let masked = MaskedText(source: "%1$@ has %2$#@COUNT@")
+        #expect(masked.text == "⟦1⟧ has ⟦@COUNT⟧")
+        #expect(try masked.unmask(masked.text) == "%1$@ has %2$#@COUNT@")
+        #expect(try masked.unmask("⟦1⟧ hat ⟦@COUNT⟧") == "%1$@ hat %2$#@COUNT@")
+
+        let sequential = MaskedText(source: "%#@COUNT@")
+        #expect(sequential.text == "⟦@COUNT⟧")
+        #expect(try sequential.unmask(sequential.text) == "%#@COUNT@")
     }
 
     @Test func unmaskUsesPositionsWhenReordered() throws {

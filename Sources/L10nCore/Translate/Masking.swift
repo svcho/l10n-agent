@@ -7,7 +7,8 @@ public struct MaskedText: Equatable, Sendable {
     public var text: String
     /// Argument index → specifier without position, e.g. 2 → `%lld`.
     var arguments: [Int: String]
-    var substitutions: Set<String>
+    /// Substitution name → exact token text, e.g. `COUNT` → `%2$#@COUNT@`.
+    var substitutions: [String: String]
     var hasPercentLiteral: Bool
     var hasSubstitutionArgument: Bool
     /// Value argument indices in source order when `*` widths are present; such strings
@@ -22,7 +23,7 @@ public struct MaskedText: Equatable, Sendable {
     public init(source: String) {
         var text = ""
         var arguments: [Int: String] = [:]
-        var substitutions: Set<String> = []
+        var substitutions: [String: String] = [:]
         var hasPercentLiteral = false
         var hasSubstitutionArgument = false
         var positional = false
@@ -43,7 +44,7 @@ public struct MaskedText: Equatable, Sendable {
                 positional = positional || token.isPositional
             case .substitution(let name):
                 text += "⟦@\(name)⟧"
-                substitutions.insert(name)
+                if substitutions[name] == nil { substitutions[name] = token.text }
             case .substitutionArgument:
                 text += "⟦arg⟧"
                 hasSubstitutionArgument = true
@@ -123,8 +124,8 @@ public struct MaskedText: Equatable, Sendable {
                 output += "%arg"
             } else if name.hasPrefix("@") {
                 let substitution = String(name.dropFirst())
-                guard substitutions.contains(substitution) else { throw UnmaskError.unknownToken(name) }
-                output += "%#@\(substitution)@"
+                guard let specifier = substitutions[substitution] else { throw UnmaskError.unknownToken(name) }
+                output += specifier
             } else if let number = Int(name), let specifier = arguments[number] {
                 output += usePositions ? FormatSpecifier.withPosition(specifier, index: number) : specifier
             } else {
