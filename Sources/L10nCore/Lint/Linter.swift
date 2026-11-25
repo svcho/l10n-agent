@@ -326,13 +326,12 @@ public struct Linter {
                 }
                 guard entry.shouldTranslate else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: source)
-                let sourceText = sourceNode.leaves.first?.unit.value ?? key
-                guard FormatSpecifier.hasText(sourceText) else { continue }
+                guard sourceNode.hasTranslatableText(fallback: key) else { continue }
 
                 if entry.comment?.trimmingCharacters(in: .whitespaces).isEmpty ?? true {
                     add(Rules.missingComment, "Key \"\(key)\" has no comment for translators", key: key)
                 }
-                if sourceNode.variations.isEmpty, sourceNode.substitutions.isEmpty, let hint = Self.catalogPluralHint(sourceText) {
+                if sourceNode.variations.isEmpty, sourceNode.substitutions.isEmpty, let hint = Self.catalogPluralHint(sourceNode.stringUnit?.value ?? key) {
                     add(Rules.catalogPluralCandidate, "Key \"\(key)\" counts something (\"\(hint)\"); add a plural variation (Vary by Plural) instead of one text for every count", key: key)
                 }
 

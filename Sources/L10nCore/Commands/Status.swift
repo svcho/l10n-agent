@@ -51,8 +51,8 @@ public enum StatusCommand {
                 if !entry.shouldTranslate { doNotTranslate += 1 }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
-                // Like lint: values without letters ("%lld", "•") need no translation.
-                guard FormatSpecifier.hasText(sourceNode.leaves.first?.unit.value ?? key) else {
+                // Like lint: a key needs no translation when every source value lacks letters ("%lld", "•").
+                guard sourceNode.hasTranslatableText(fallback: key) else {
                     withoutText += 1
                     continue
                 }

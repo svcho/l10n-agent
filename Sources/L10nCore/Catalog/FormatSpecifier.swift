@@ -112,7 +112,17 @@ public enum FormatSpecifier {
     /// (`"%lld"` and `"%@ · %@"` do not).
     public static func hasText(_ string: String) -> Bool {
         var text = string
-        for token in tokens(in: string).reversed() { text.removeSubrange(token.range) }
+        for token in tokens(in: string).reversed() {
+            var range = token.range
+            // The tokenizer reads a positional substitution (`%1$#@COUNT@`) as the argument
+            // `%1$#@`; its name up to the closing `@` is not words either.
+            if case .argument = token.kind, token.isPositional, token.text.hasSuffix("$#@"),
+               let close = string[range.upperBound...].firstIndex(of: "@"), close > range.upperBound,
+               string[range.upperBound..<close].allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+                range = range.lowerBound..<string.index(after: close)
+            }
+            text.removeSubrange(range)
+        }
         return text.contains(where: \.isLetter)
     }
 

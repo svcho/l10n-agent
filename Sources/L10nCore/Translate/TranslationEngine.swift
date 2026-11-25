@@ -146,8 +146,9 @@ public final class TranslationEngine: @unchecked Sendable {
                 if let keyFilter, !keyFilter.contains(ByteKey(key)) { continue }
                 guard entry.shouldTranslate, !entry.isStale else { continue }
                 let sourceNode = entry.sourceNode(key: key, sourceLanguage: catalog.sourceLanguage)
-                // Like lint and status: values without words ("%lld", "•") are never sent.
-                guard sourceNode.leaves.contains(where: { FormatSpecifier.hasText($0.unit.value) }) else { continue }
+                // Like lint and status: a key is planned only when some source value has words; once it
+                // qualifies, its placeholder-only cases (a "%lld" device case) are planned too.
+                guard sourceNode.hasTranslatableText() else { continue }
                 let fingerprint = FingerprintStore.sourceFingerprint(sourceNode)
                 let shapes = Self.unitShapes(sourceNode, path: [])
 
@@ -268,13 +269,13 @@ public final class TranslationEngine: @unchecked Sendable {
             let forms = plural.compactMapValues { $0.stringUnit?.value }
             return forms.isEmpty ? [] : [UnitShape(path: path, source: nil, forms: forms)]
         }
+        var shapes: [UnitShape] = []
         if let device = variations["device"] {
-            return device.keys.sorted().flatMap { name in
+            // Device cases may share the localization's root substitutions, collected below.
+            shapes = device.keys.sorted().flatMap { name in
                 unitShapes(device[name]!, path: path + ["variations", "device", name])
             }
-        }
-        var shapes: [UnitShape] = []
-        if let unit = node.stringUnit {
+        } else if let unit = node.stringUnit {
             shapes.append(UnitShape(path: path, source: unit.value, forms: nil))
         }
         for (name, substitution) in node.substitutions.sorted(by: { $0.key < $1.key }) {

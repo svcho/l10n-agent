@@ -241,6 +241,16 @@ public struct LocalizationNode: Equatable, Sendable {
         return result
     }
 
+    /// Whether any string unit has text after format specifiers are removed.
+    /// Use the optional fallback only when there are no string units.
+    func hasTranslatableText(fallback: String? = nil) -> Bool {
+        let sourceLeaves = leaves
+        if sourceLeaves.isEmpty {
+            return fallback.map(FormatSpecifier.hasText) ?? false
+        }
+        return sourceLeaves.contains { FormatSpecifier.hasText($0.unit.value) }
+    }
+
     public struct Leaf: Equatable, Sendable {
         public var path: [String]
         public var unit: StringUnit
