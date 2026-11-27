@@ -324,6 +324,11 @@ struct RerunRegressionTests {
         #expect(StatusCommand.below(try StatusCommand.run(project: project), percent: 100).isEmpty)
         let findings = try Linter(project: project).run(LintOptions(rules: ["L10N101"], code: false)).diagnostics
         #expect(findings.isEmpty)
+
+        let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(dryRun.failed.isEmpty)
+        #expect(dryRun.planned == 0)
+        #expect(dryRun.units == [])
     }
 
     @Test func deviceVariantsCheckRootSubstitutions() async throws {
@@ -373,18 +378,24 @@ struct RerunRegressionTests {
             """,
         ])
         let project = try Project.discover(root: root)
-        let de = try #require(try StatusCommand.run(project: project).catalogs.first?.locales.first { $0.locale == "de" })
-        #expect(de.total == 1 && de.missing == 1)
+        let report = try StatusCommand.run(project: project)
+        let de = try #require(report.catalogs.first?.locales.first { $0.locale == "de" })
+        #expect(de.total == 1 && de.missing == 1 && de.approved == 0 && de.percentComplete == 0)
+        #expect(StatusCommand.below(report, percent: 100) == ["Localizable.xcstrings de 0%"])
         let missing = try Linter(project: project).run(LintOptions(rules: ["L10N101"], code: false)).diagnostics
         #expect(missing.map(\.key) == ["inventory.items"])
         #expect(missing.first?.locales == ["de"])
 
         let dryRun = try await TranslationEngine(project: project).run(TranslateOptions(dryRun: true), model: nil)
+        #expect(dryRun.failed.isEmpty)
         #expect(dryRun.planned == 1)
         let unit = try #require(dryRun.units?.first)
+        #expect(unit.catalog == "Localizable.xcstrings")
         #expect(unit.key == "inventory.items" && unit.locale == "de")
         #expect(unit.path == ["substitutions", "items"])
         #expect(unit.categories == ["one"])
+        #expect(unit.reason == "missing")
+        #expect(unit.sourceForms == ["one": "%arg item", "other": "%arg items"])
     }
 
     @Test func statusAndLintFallBackToTheKeyForEmptySources() async throws {

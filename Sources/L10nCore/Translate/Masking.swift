@@ -7,7 +7,8 @@ public struct MaskedText: Equatable, Sendable {
     public var text: String
     /// Argument index → specifier without position, e.g. 2 → `%lld`.
     var arguments: [Int: String]
-    var substitutions: Set<String>
+    /// Mask token name (without `⟦⟧`, e.g. `@COUNT` or `@COUNT#2`) → exact token text.
+    var substitutions: [String: String]
     var hasPercentLiteral: Bool
     var hasSubstitutionArgument: Bool
     /// Value argument indices in source order when `*` widths are present; such strings
@@ -22,7 +23,7 @@ public struct MaskedText: Equatable, Sendable {
     public init(source: String) {
         var text = ""
         var arguments: [Int: String] = [:]
-        var substitutions: Set<String> = []
+        var substitutions: [String: String] = [:]
         var hasPercentLiteral = false
         var hasSubstitutionArgument = false
         var positional = false
@@ -41,9 +42,15 @@ public struct MaskedText: Equatable, Sendable {
                 valueOrder.append(index)
                 hasDynamicWidth = hasDynamicWidth || !token.widthArguments.isEmpty
                 positional = positional || token.isPositional
-            case .substitution(let name):
-                text += "⟦@\(name)⟧"
-                substitutions.insert(name)
+            case .substitution(let name, _):
+                var key = "@\(name)"
+                var suffix = 2
+                while let existing = substitutions[key], existing != token.text {
+                    key = "@\(name)#\(suffix)"
+                    suffix += 1
+                }
+                substitutions[key] = token.text
+                text += "⟦\(key)⟧"
             case .substitutionArgument:
                 text += "⟦arg⟧"
                 hasSubstitutionArgument = true
@@ -122,9 +129,8 @@ public struct MaskedText: Equatable, Sendable {
             } else if name == "arg", hasSubstitutionArgument {
                 output += "%arg"
             } else if name.hasPrefix("@") {
-                let substitution = String(name.dropFirst())
-                guard substitutions.contains(substitution) else { throw UnmaskError.unknownToken(name) }
-                output += "%#@\(substitution)@"
+                guard let specifier = substitutions[name] else { throw UnmaskError.unknownToken(name) }
+                output += specifier
             } else if let number = Int(name), let specifier = arguments[number] {
                 output += usePositions ? FormatSpecifier.withPosition(specifier, index: number) : specifier
             } else {

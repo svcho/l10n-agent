@@ -7,8 +7,9 @@ public struct FormatToken: Equatable, Sendable {
         case percentLiteral
         /// `%@`, `%lld`, `%1$.2f`, …
         case argument(index: Int, type: ArgumentType)
-        /// `%#@name@`, a reference into the localization's `substitutions`.
-        case substitution(name: String)
+        /// `%#@name@` or `%n$#@name@`, a reference into the localization's `substitutions`.
+        /// `index` is the explicit `n$` position, when the token has one.
+        case substitution(name: String, index: Int?)
         /// `%arg`, the argument placeholder inside a substitution's variations.
         case substitutionArgument
     }
@@ -62,11 +63,11 @@ public enum FormatSpecifier {
                 }
             }
 
-            if string[afterPercent] == "#", let substitution = parseSubstitution(string, from: afterPercent) {
+            if let substitution = parseSubstitution(string, from: afterPercent) {
                 tokens.append(FormatToken(
-                    kind: .substitution(name: substitution.name),
+                    kind: .substitution(name: substitution.name, index: substitution.index),
                     text: String(string[percent..<substitution.end]),
-                    isPositional: false,
+                    isPositional: substitution.index != nil,
                     range: percent..<substitution.end
                 ))
                 cursor = substitution.end
@@ -112,17 +113,7 @@ public enum FormatSpecifier {
     /// (`"%lld"` and `"%@ · %@"` do not).
     public static func hasText(_ string: String) -> Bool {
         var text = string
-        for token in tokens(in: string).reversed() {
-            var range = token.range
-            // The tokenizer reads a positional substitution (`%1$#@COUNT@`) as the argument
-            // `%1$#@`; its name up to the closing `@` is not words either.
-            if case .argument = token.kind, token.isPositional, token.text.hasSuffix("$#@"),
-               let close = string[range.upperBound...].firstIndex(of: "@"), close > range.upperBound,
-               string[range.upperBound..<close].allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
-                range = range.lowerBound..<string.index(after: close)
-            }
-            text.removeSubrange(range)
-        }
+        for token in tokens(in: string).reversed() { text.removeSubrange(token.range) }
         return text.contains(where: \.isLetter)
     }
 
@@ -140,9 +131,23 @@ public enum FormatSpecifier {
 
     public static func substitutionNames(in string: String) -> Set<String> {
         Set(tokens(in: string).compactMap {
-            if case .substitution(let name) = $0.kind { return name }
+            if case .substitution(let name, _) = $0.kind { return name }
             return nil
         })
+    }
+
+    /// Explicit `n$` indices used for each named substitution, by name, in order of
+    /// first appearance. Names that only appear without an index are absent.
+    static func substitutionPositions(in string: String) -> [String: [Int]] {
+        var positions: [String: [Int]] = [:]
+        for token in tokens(in: string) {
+            if case .substitution(let name, let index?) = token.kind {
+                var list = positions[name, default: []]
+                if !list.contains(index) { list.append(index) }
+                positions[name] = list
+            }
+        }
+        return positions
     }
 
     public static func hasArguments(_ string: String) -> Bool {
@@ -167,15 +172,28 @@ public enum FormatSpecifier {
         "%\(index)$" + stripPosition(text).dropFirst()
     }
 
-    private static func parseSubstitution(_ string: String, from hashIndex: String.Index) -> (name: String, end: String.Index)? {
+    /// Parses `%#@name@` or `%n$#@name@` starting at the index just after `%`.
+    private static func parseSubstitution(_ string: String, from start: String.Index) -> (name: String, index: Int?, end: String.Index)? {
+        var cursor = start
+        var explicitIndex: Int?
+        while cursor < string.endIndex, string[cursor].isASCII, string[cursor].isNumber {
+            cursor = string.index(after: cursor)
+        }
+        if cursor != start {
+            guard cursor < string.endIndex, string[cursor] == "$" else { return nil }
+            guard let parsed = Int(string[start..<cursor]) else { return nil }
+            explicitIndex = parsed
+            cursor = string.index(after: cursor)
+        }
         // %#@name@
-        let at = string.index(after: hashIndex)
+        guard cursor < string.endIndex, string[cursor] == "#" else { return nil }
+        let at = string.index(after: cursor)
         guard at < string.endIndex, string[at] == "@" else { return nil }
         let nameStart = string.index(after: at)
         guard let close = string[nameStart...].firstIndex(of: "@"), close > nameStart else { return nil }
         let name = String(string[nameStart..<close])
         guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else { return nil }
-        return (name, string.index(after: close))
+        return (name, explicitIndex, string.index(after: close))
     }
 
     private static func parseArgument(_ string: String, from start: String.Index) -> (position: Int?, type: FormatToken.ArgumentType, end: String.Index, stars: [Int?])? {

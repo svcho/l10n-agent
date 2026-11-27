@@ -18,7 +18,7 @@ public enum Rules {
     public static let missingTranslation = RuleInfo(id: "L10N101", name: "missing-translation", defaultSeverity: .warning, summary: "A key has no translation for a target locale.")
     public static let needsReview = RuleInfo(id: "L10N102", name: "needs-review", defaultSeverity: .info, summary: "A translation is waiting for human review.")
     public static let staleTranslation = RuleInfo(id: "L10N103", name: "stale-translation", defaultSeverity: .warning, summary: "The source text changed after the translation was made.")
-    public static let formatMismatch = RuleInfo(id: "L10N104", name: "format-mismatch", defaultSeverity: .error, summary: "A translation's format specifiers do not match the source (by argument index and type).")
+    public static let formatMismatch = RuleInfo(id: "L10N104", name: "format-mismatch", defaultSeverity: .error, summary: "A translation differs from the source in format arguments or named substitutions, including explicit substitution indices.")
     public static let missingComment = RuleInfo(id: "L10N105", name: "missing-comment", defaultSeverity: .info, summary: "A key has no comment to give translators context.")
     public static let unusedKey = RuleInfo(id: "L10N106", name: "unused-key", defaultSeverity: .info, summary: "A key is no longer used: Xcode marked it stale, or no Swift file references a manual key.")
     public static let keyStyle = RuleInfo(id: "L10N107", name: "key-style", defaultSeverity: .warning, summary: "A manual key does not follow the configured key style.")
