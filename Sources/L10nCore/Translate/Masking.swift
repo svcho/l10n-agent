@@ -7,7 +7,7 @@ public struct MaskedText: Equatable, Sendable {
     public var text: String
     /// Argument index → specifier without position, e.g. 2 → `%lld`.
     var arguments: [Int: String]
-    /// Substitution name → exact token text, e.g. `COUNT` → `%2$#@COUNT@`.
+    /// Mask token name (without `⟦⟧`, e.g. `@COUNT` or `@COUNT#2`) → exact token text.
     var substitutions: [String: String]
     var hasPercentLiteral: Bool
     var hasSubstitutionArgument: Bool
@@ -43,8 +43,14 @@ public struct MaskedText: Equatable, Sendable {
                 hasDynamicWidth = hasDynamicWidth || !token.widthArguments.isEmpty
                 positional = positional || token.isPositional
             case .substitution(let name, _):
-                text += "⟦@\(name)⟧"
-                if substitutions[name] == nil { substitutions[name] = token.text }
+                var key = "@\(name)"
+                var suffix = 2
+                while let existing = substitutions[key], existing != token.text {
+                    key = "@\(name)#\(suffix)"
+                    suffix += 1
+                }
+                substitutions[key] = token.text
+                text += "⟦\(key)⟧"
             case .substitutionArgument:
                 text += "⟦arg⟧"
                 hasSubstitutionArgument = true
@@ -123,8 +129,7 @@ public struct MaskedText: Equatable, Sendable {
             } else if name == "arg", hasSubstitutionArgument {
                 output += "%arg"
             } else if name.hasPrefix("@") {
-                let substitution = String(name.dropFirst())
-                guard let specifier = substitutions[substitution] else { throw UnmaskError.unknownToken(name) }
+                guard let specifier = substitutions[name] else { throw UnmaskError.unknownToken(name) }
                 output += specifier
             } else if let number = Int(name), let specifier = arguments[number] {
                 output += usePositions ? FormatSpecifier.withPosition(specifier, index: number) : specifier

@@ -63,13 +63,13 @@ public enum FormatParity {
         // may drop it, but not point it at another argument.
         let sourcePositions = FormatSpecifier.substitutionPositions(in: source)
         let targetPositions = FormatSpecifier.substitutionPositions(in: target)
-        for name in Set(sourcePositions.keys).union(targetPositions.keys).sorted() {
-            guard let targetIndex = targetPositions[name] else { continue }
-            guard let sourceIndex = sourcePositions[name] else {
-                return "substitution \(name) uses argument \(targetIndex) but the source has no explicit index"
+        for (name, targetIndices) in targetPositions.sorted(by: { $0.key < $1.key }) {
+            guard let sourceIndices = sourcePositions[name] else {
+                return "substitution \(name) uses argument \(targetIndices[0]) but the source has no explicit index"
             }
-            if targetIndex != sourceIndex {
-                return "substitution \(name) uses argument \(targetIndex) but the source uses \(sourceIndex)"
+            if let unexpected = targetIndices.first(where: { !sourceIndices.contains($0) }) {
+                let expected = sourceIndices.sorted().map(String.init).joined(separator: ", ")
+                return "substitution \(name) uses argument \(unexpected) but the source uses \(expected)"
             }
         }
 

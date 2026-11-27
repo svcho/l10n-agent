@@ -136,13 +136,15 @@ public enum FormatSpecifier {
         })
     }
 
-    /// Explicit `n$` index of each named substitution, by name. The first explicit
-    /// occurrence wins; names that only appear without an index are absent.
-    static func substitutionPositions(in string: String) -> [String: Int] {
-        var positions: [String: Int] = [:]
+    /// Explicit `n$` indices used for each named substitution, by name, in order of
+    /// first appearance. Names that only appear without an index are absent.
+    static func substitutionPositions(in string: String) -> [String: [Int]] {
+        var positions: [String: [Int]] = [:]
         for token in tokens(in: string) {
-            if case .substitution(let name, let index?) = token.kind, positions[name] == nil {
-                positions[name] = index
+            if case .substitution(let name, let index?) = token.kind {
+                var list = positions[name, default: []]
+                if !list.contains(index) { list.append(index) }
+                positions[name] = list
             }
         }
         return positions

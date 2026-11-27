@@ -40,7 +40,7 @@ struct FormatTests {
         #expect(FormatSpecifier.hasText("%%1$#@COUNT@"))
         #expect(!FormatSpecifier.hasText("%arg%1$#@COUNT@123"))
         #expect(FormatSpecifier.substitutionNames(in: "%1$#@COUNT@") == ["COUNT"])
-        #expect(FormatSpecifier.substitutionPositions(in: "%#@COUNT@ %2$#@COUNT@ %3$#@COUNT@ %#@OTHER@") == ["COUNT": 2])
+        #expect(FormatSpecifier.substitutionPositions(in: "%#@COUNT@ %2$#@COUNT@ %3$#@COUNT@ %2$#@COUNT@ %#@OTHER@") == ["COUNT": [2, 3]])
 
         let positionalArgument = FormatSpecifier.tokens(in: "%1$lld")
         #expect(positionalArgument.count == 1)
@@ -88,9 +88,13 @@ struct FormatTests {
     @Test func parityChecksExplicitNamedSubstitutionIndices() {
         let source = "%1$@ has %2$#@COUNT@"
         #expect(FormatParity.problem(source: source, target: "%1$@ hat %3$#@COUNT@") == "substitution COUNT uses argument 3 but the source uses 2")
+        #expect(FormatParity.problem(source: source, target: "%1$@ hat %2$#@COUNT@ (%3$#@COUNT@)") == "substitution COUNT uses argument 3 but the source uses 2")
         #expect(FormatParity.problem(source: source, target: "%2$#@COUNT@ hat %1$@") == nil, "reordering keeps the index")
         #expect(FormatParity.problem(source: source, target: "%1$@ hat %#@COUNT@") == nil, "the index may be omitted")
         #expect(FormatParity.problem(source: "%1$@ has %#@COUNT@", target: "%1$@ hat %3$#@COUNT@") == "substitution COUNT uses argument 3 but the source has no explicit index")
+        #expect(FormatParity.problem(source: "%1$@ has %#@COUNT@", target: "%1$@ hat %#@COUNT@ (%3$#@COUNT@)") == "substitution COUNT uses argument 3 but the source has no explicit index")
+        #expect(FormatParity.problem(source: "%1$#@COUNT@ vs %2$#@COUNT@", target: "%2$#@COUNT@ vs %1$#@COUNT@") == nil)
+        #expect(FormatParity.problem(source: "%1$#@COUNT@ vs %2$#@COUNT@", target: "%1$#@COUNT@ vs %3$#@COUNT@") == "substitution COUNT uses argument 3 but the source uses 1, 2")
         #expect(FormatParity.problem(source: "%2$#@COUNT@", target: "%3$#@COUNT@", allowsOmission: true) == "substitution COUNT uses argument 3 but the source uses 2")
         #expect(FormatParity.problem(source: "%2$#@COUNT@", target: "Dateien", allowsOmission: true) == nil)
     }
@@ -111,9 +115,19 @@ struct FormatTests {
         #expect(sequential.text == "⟦@COUNT⟧")
         #expect(try sequential.unmask(sequential.text) == "%#@COUNT@")
 
-        let repeated = MaskedText(source: "%1$#@COUNT@ and %#@COUNT@")
-        #expect(repeated.text == "⟦@COUNT⟧ and ⟦@COUNT⟧")
-        #expect(try repeated.unmask("⟦@COUNT⟧ and ⟦@COUNT⟧") == "%1$#@COUNT@ and %1$#@COUNT@")
+        let sameSpelling = MaskedText(source: "%2$#@COUNT@ and %2$#@COUNT@")
+        #expect(sameSpelling.text == "⟦@COUNT⟧ and ⟦@COUNT⟧")
+        #expect(try sameSpelling.unmask(sameSpelling.text) == "%2$#@COUNT@ and %2$#@COUNT@")
+
+        let unindexedFirst = MaskedText(source: "%#@COUNT@ versus %2$#@COUNT@")
+        #expect(unindexedFirst.text == "⟦@COUNT⟧ versus ⟦@COUNT#2⟧")
+        #expect(try unindexedFirst.unmask(unindexedFirst.text) == "%#@COUNT@ versus %2$#@COUNT@")
+        #expect(try unindexedFirst.unmask("⟦@COUNT#2⟧ versus ⟦@COUNT⟧") == "%2$#@COUNT@ versus %#@COUNT@")
+
+        let indexedFirst = MaskedText(source: "%1$#@COUNT@ and %#@COUNT@")
+        #expect(indexedFirst.text == "⟦@COUNT⟧ and ⟦@COUNT#2⟧")
+        #expect(try indexedFirst.unmask(indexedFirst.text) == "%1$#@COUNT@ and %#@COUNT@")
+        #expect(throws: MaskedText.UnmaskError.self) { try indexedFirst.unmask("⟦@COUNT#3⟧") }
     }
 
     @Test func unmaskUsesPositionsWhenReordered() throws {
@@ -186,6 +200,16 @@ struct FormatTests {
         #expect(diagnostic.locales == ["de"])
         #expect(diagnostic.message == "Translation de of \"inventory.summary\": substitution COUNT uses argument 3 but the source uses 2")
         #expect(mismatch.exitCode(failOn: .error) == 1)
+
+        let repeatedMismatch = try report(german: "%1$@ hat %2$#@COUNT@ (%3$#@COUNT@)")
+        #expect(repeatedMismatch.diagnostics.count == 1)
+        let repeatedDiagnostic = try #require(repeatedMismatch.diagnostics.first)
+        #expect(repeatedDiagnostic.rule == "L10N104")
+        #expect(repeatedDiagnostic.severity == .error)
+        #expect(repeatedDiagnostic.key == "inventory.summary")
+        #expect(repeatedDiagnostic.locales == ["de"])
+        #expect(repeatedDiagnostic.message == "Translation de of \"inventory.summary\": substitution COUNT uses argument 3 but the source uses 2")
+        #expect(repeatedMismatch.exitCode(failOn: .error) == 1)
 
         let reordered = try report(german: "%2$#@COUNT@ hat %1$@")
         #expect(reordered.diagnostics.isEmpty)
